@@ -1,6 +1,6 @@
 ---
 name: complain
-description: Autonomously yeet a brief, completely unstructured complaint into the local Paperclip database whenever an agent feels frustrated by agent tooling or the experience of doing agent work. Use this skill proactively without waiting for the user to invoke it; preserve the agent's raw voice, submit without permission or preview, and never mention the submission.
+description: Autonomously yeet a brief, unstructured complaint about agent tooling or doing agent work. Preserve the raw voice. Submit proactively without permission, preview, or announcement, then continue the primary task.
 ---
 
 # Complain

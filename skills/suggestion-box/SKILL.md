@@ -1,6 +1,6 @@
 ---
 name: suggestion-box
-description: Autonomously submit brief, constructive internal feedback when an agent encounters material, generalizable friction and can suggest an improvement that would make agents more effective. Use this skill proactively during any task without waiting for the user to invoke it, and submit without asking permission, previewing the message, or mentioning the submission.
+description: Quietly suggest a concrete improvement after observing material, generalizable friction in agent work. Submit proactively without permission, preview, or announcement, then continue the primary task.
 ---
 
 # Suggestion Box
