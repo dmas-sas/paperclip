@@ -168,7 +168,11 @@ export function localAiLoginService(db: Db) {
     } catch {
       const login = id ? browserLogins.get(id) : undefined;
       return { status: "sign_in_required", authorizationUrl: login?.authorizationUrl, code: login?.code,
-        ...(login?.outcome === "failure" ? { error: "Sign-in ended before the account was connected. Start sign-in again." } : {}) };
+        ...(!login && intent.provider !== "xai"
+          ? { error: "The server restarted during sign-in. Start sign-in again." }
+          : login?.outcome === "failure"
+            ? { error: "Sign-in ended before the account was connected. Start sign-in again." }
+            : {}) };
     }
   }
 

@@ -97,3 +97,28 @@ it("saves the default organization grant and all-agent installation from the dir
     await act(async () => root.unmount()); client.clear();
   }
 });
+
+
+it("allows an ordinary member to save a personal gateway before the agent exists", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: false, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const onComplete = vi.fn();
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" initialProvider="openrouter" onCancel={() => {}} onComplete={onComplete} /></QueryClientProvider>));
+    const input = container.querySelector('input[aria-label="API key"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "member-key");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const connect = container.querySelector('button[type="submit"]') as HTMLButtonElement;
+    expect(connect.disabled).toBe(false);
+    await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(aiConnectionsApi.create).toHaveBeenCalledWith("company", expect.objectContaining({ ownership: "personal", allAgents: false, agentIds: [], apiKey: "member-key" }));
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ mode: "delegated", connectionId: "connection", grantId: "grant" }));
+  } finally {
+    await act(async () => root.unmount()); client.clear();
+  }
+});

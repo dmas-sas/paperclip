@@ -450,7 +450,7 @@ export function AiProviderSetup({
               type="submit"
               disabled={
                 save.isPending || accounts.isPending || accounts.isError ||
-                (!reconnect && !allAgents && agentIds.size === 0) ||
+                (!reconnect && ownership === "shared" && !allAgents && agentIds.size === 0) ||
                 (auth !== "none" && !apiKey.trim())
               }
             >
