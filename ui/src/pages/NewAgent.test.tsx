@@ -611,6 +611,7 @@ describe("New agent setup", () => {
       provider: "openrouter", method: "api_key", apiKey: "example-test-secret",
     }));
     const binding = { provider: "openrouter", method: "api_key", mode: "shared", connectionId: "managed-connection", grantId: "managed-grant" };
+
     await click("Run test");
     expect(api.testEnvironment.mock.calls[0][2]).toEqual(expect.objectContaining({
       aiConnection: binding, testCredentials: {},

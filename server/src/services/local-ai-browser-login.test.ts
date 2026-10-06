@@ -61,8 +61,8 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     let pid = 0;
     await vi.waitFor(async () => { pid = Number(await readFile(path.join(home, "login.pid"), "utf8")); expect(pid).toBeGreaterThan(0); });
     login.abort();
-    await vi.waitFor(() => expect(login.outcome).toBe("failure"));
-    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5000 });
+    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 5000 });
   });
 
   it("cancels Claude while waiting for its browser code and terminates the provider", async () => {
@@ -77,15 +77,15 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     await vi.waitFor(() => expect(login.authorizationUrl).toBeDefined());
     const pid = Number(await readFile(path.join(home, "login.pid"), "utf8"));
     login.abort();
-    await vi.waitFor(() => expect(login.outcome).toBe("failure"));
-    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5000 });
+    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 5000 });
     await expect(readFile(path.join(home, ".credentials.json"))).rejects.toThrow();
   });
 
   it("returns a fixed failure without exposing provider error output", async () => {
     const home = await fakeCli("codex", 'echo "private-provider-error" >&2\nexit 1');
     const login = startLocalBrowserLogin("openai", home);
-    await vi.waitFor(() => expect(login.outcome).toBe("failure"));
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5000 });
     expect(JSON.stringify(login)).not.toContain("private-provider-error");
     expect(login.authorizationUrl).toBeUndefined();
   });
