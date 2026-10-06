@@ -529,7 +529,7 @@ Native subscription and API-key setup keep their existing controls.
 | Hermes local | OpenRouter; custom/local Chat Completions |
 | Gemini CLI, Grok | Their native API connections; custom routes are not advertised |
 
-Migration `0303` adds Google to both account-default provider constraints. Local
+Migration `0306` adds Google to both account-default provider constraints. Local
 Gemini connections seed the API-key auth choice in their disposable home before
 environment probes and task execution. The settings file contains no credential.
 

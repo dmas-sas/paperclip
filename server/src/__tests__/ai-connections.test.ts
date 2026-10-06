@@ -126,7 +126,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       provider: "google", method: "api_key", ownership: "personal", name: "Google migration",
       apiKey: "fixture", allAgents: true, agentIds: [],
     }, "google-migration-key");
-    const migration = await readFile(new URL("../../../packages/db/src/migrations/0303_fuzzy_maverick.sql", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0306_familiar_titania.sql", import.meta.url), "utf8");
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await db.transaction(async (tx) => {
         for (const statement of migration.split("--> statement-breakpoint")) {
