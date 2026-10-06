@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { createServer as createHttpServer } from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { getCACertificates } from "node:tls";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
@@ -694,7 +695,7 @@ describe("OpenCodeServerDriver", () => {
     }
   });
 
-  it.each(["HTTP_PROXY", "ALL_PROXY"])("uses the runtime's %s and honors NO_PROXY without changing global transport", async proxySetting => {
+  it.each([["HTTP_PROXY", "file"], ["ALL_PROXY", "directory"]] as const)("uses the runtime's %s, %s trust, and NO_PROXY without changing global transport", async (proxySetting, trust) => {
     const requests: string[] = [];
     const outgoingProxy = createHttpServer((request, response) => {
       requests.push(request.url!);
@@ -706,10 +707,16 @@ describe("OpenCodeServerDriver", () => {
     if (!address || typeof address === "string") throw new Error("Missing proxy fixture address");
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-outgoing-proxy-"));
     roots.push(root);
+    const certificateDir = join(root, "certificates");
+    await mkdir(certificateDir);
+    const certificatePath = join(certificateDir, "runtime-ca.pem");
+    await writeFile(certificatePath, getCACertificates("default")[0]!);
+    await writeFile(join(certificateDir, "README"), "Non-certificate directory entries must be ignored.");
+    const trustEnvironment = trust === "file" ? { SSL_CERT_FILE: certificatePath } : { SSL_CERT_DIR: certificateDir };
     const headersAndUrl = async (sessionId: string, noProxy: string) => {
       const driver = new OpenCodeServerDriver({
         model: "paperclip/team/model-alias", runtimeDirectory: root, command: fixture,
-        environment: { PATH: process.env.PATH, PAPERCLIP_AI_PROVIDER_URL: "http://gateway.invalid/v1", PAPERCLIP_AI_PROVIDER_KEY: "fixture-key", [proxySetting]: `http://127.0.0.1:${address.port}`, NO_PROXY: noProxy },
+        environment: { ...trustEnvironment, PATH: process.env.PATH, PAPERCLIP_AI_PROVIDER_URL: "http://gateway.invalid/v1", PAPERCLIP_AI_PROVIDER_KEY: "fixture-key", [proxySetting]: `http://127.0.0.1:${address.port}`, NO_PROXY: noProxy },
       });
       const session = await driver.openSession({ runId: sessionId, normalizedSessionId: sessionId, workingDirectory: root });
       const config = JSON.parse(await readFile(join(root, sessionId, "config", "opencode", "opencode.json"), "utf8"));
