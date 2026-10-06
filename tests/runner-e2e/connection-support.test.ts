@@ -10,7 +10,7 @@ import { parseConnectionConfig, targetOrigin, selectedSecret, resolveConnectionS
 import { connectionCheckpoints, connectionEvidencePasses, connectionRunDiagnostic, createConnectionProof, verifyConnectionArtifact, verifyConnectionRun, completedConnectionArtifactRun, connectionProbeChecks, type ConnectionEvidence } from "./connection-evidence.js";
 import { validateRetainedRunnerResult } from "./result-validation.js";
 import { verifyConnectionTarget } from "./connection-target.js";
-import { cleanupConnectionCompany, runConnectionCampaign, safeConnectionFailure, withConnectionCampaignCancellation } from "./connection-launch.js";
+import { cleanupConnectionCompany, connectionCreationReceipt, runConnectionCampaign, safeConnectionFailure, withConnectionCampaignCancellation } from "./connection-launch.js";
 import type { ConnectionApi } from "./connection-target.js";
 import * as connectionConfig from "./connection-config.js";
 import * as connectionTarget from "./connection-target.js";
@@ -31,17 +31,17 @@ describe("connection fixture cleanup evidence", () => {
       get: vi.fn(async (route: string) => {
         if (route.endsWith("/agents")) return [{ id: "qa-agent", name: "Fixture" }, { id: "foreign", name: "Other" }];
         if (route.includes("heartbeat-runs?")) return [{ id: "run", agentId: "qa-agent", status }];
-        if (route.endsWith("/ai-connections")) return { connections: [{ id: "account", status: revoked ? "revoked" : "active" }] };
+        if (route.endsWith("/ai-connections")) return { connections: [{ id: "account", status: revoked ? "revoked" : "active" }, { id: "foreign-account", status: "active" }] };
         if (deleted) throw new Error("Run was deleted");
         if (route.includes("/log?")) { events.push("log"); return { content: JSON.stringify({ chunk: JSON.stringify({ type: "acpx.error", childStderrTail: "HTTP 503 model overloaded" }) + "\n" }) }; }
         events.push("run"); return { id: "run", status };
       }),
       patch: vi.fn(async () => { events.push("pause"); }),
       post: vi.fn(async (route: string) => { if (route.endsWith("/cancel")) { events.push("cancel"); status = "cancelled"; } else events.push("archive"); }),
-      delete: vi.fn(async (route: string) => { if (route.includes("tool-connections")) { events.push("revoke"); revoked = true; } else { events.push("delete-agent"); deleted = true; } }),
+      delete: vi.fn(async (route: string) => { if (route.endsWith("/foreign-account")) throw new Error("Revoked a concurrent campaign"); if (route.includes("tool-connections")) { events.push("revoke"); revoked = true; } else { events.push("delete-agent"); deleted = true; } }),
     };
     await cleanupConnectionCompany({ api: api as unknown as ConnectionApi, companyId: "company", agentName: "Fixture", attachedCompany,
-      retainCompany: false, evidence, collectDiagnostics: async () => {
+      retainCompany: false, createdConnectionIds: new Set(["account"]), evidence, collectDiagnostics: async () => {
         const run = await api.get("/api/heartbeat-runs/run");
         const log = await api.get("/api/heartbeat-runs/run/log?limitBytes=2000000");
         evidence.runDiagnostics = [connectionRunDiagnostic(run, log)];
@@ -49,6 +49,7 @@ describe("connection fixture cleanup evidence", () => {
     expect(events).toEqual(["pause", "cancel", "run", "log", "revoke", attachedCompany ? "delete-agent" : "archive"]);
     expect(evidence.runDiagnostics).toEqual([{ runId: "run", status: "cancelled", signals: ["provider_overloaded"], logAvailable: true }]);
     expect(api.delete).not.toHaveBeenCalledWith("/api/agents/foreign");
+    expect(api.delete).not.toHaveBeenCalledWith("/api/tool-connections/foreign-account");
   });
   it("preserves diagnostics and avoids deletion when cancellation fails", async () => {
     const collectDiagnostics = vi.fn(async () => {});
@@ -57,9 +58,21 @@ describe("connection fixture cleanup evidence", () => {
       patch: vi.fn(async () => {}), post: vi.fn(async () => { throw new Error("cancel failed"); }), delete: vi.fn(),
     };
     await expect(cleanupConnectionCompany({ api: api as unknown as ConnectionApi, companyId: "company", agentName: "Fixture", attachedCompany: true,
-      retainCompany: false, evidence: {}, collectDiagnostics })).rejects.toThrow("cancel failed");
+      retainCompany: false, createdConnectionIds: new Set(), evidence: {}, collectDiagnostics })).rejects.toThrow("cancel failed");
     expect(collectDiagnostics).toHaveBeenCalledOnce();
     expect(api.delete).not.toHaveBeenCalled();
+  });
+  it("accepts only creation receipts from this browser and its owned login sessions", () => {
+    const body = { connectionId: "00000000-0000-4000-8000-000000000021" };
+    const root = "/api/companies/company/ai-connections";
+    const logins = new Set(["owned-session"]);
+    expect(connectionCreationReceipt(root, "POST", "company", logins, body)).toBe(body.connectionId);
+    expect(connectionCreationReceipt(`${root}/local`, "POST", "company", logins, body)).toBe(body.connectionId);
+    expect(connectionCreationReceipt(`${root}/login/owned-session`, "GET", "company", logins, body)).toBe(body.connectionId);
+    expect(connectionCreationReceipt(`${root}/login/foreign-session`, "GET", "company", logins, body)).toBeUndefined();
+    expect(connectionCreationReceipt(root, "GET", "company", logins, body)).toBeUndefined();
+    expect(connectionCreationReceipt(root, "POST", "different-company", logins, body)).toBeUndefined();
+    expect(connectionCreationReceipt(root, "POST", "company", logins, { connectionId: "not-a-receipt" })).toBeUndefined();
   });
 });
 

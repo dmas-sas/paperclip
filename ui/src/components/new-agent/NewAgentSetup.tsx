@@ -189,6 +189,12 @@ function Setup({
     setTestState("idle");
     setError(null);
   };
+  const editConnection = () => {
+    setConnection(null);
+    setRuntimeAiBinding(undefined);
+    resetTest();
+    setScreen("connect");
+  };
   const adapters = useQuery({
     queryKey: queryKeys.adapters.all,
     queryFn: adaptersApi.list,
@@ -686,7 +692,7 @@ function Setup({
                     disabled={
                       busy || Boolean(created) || step === "saved"
                     }
-                    onClick={() => setScreen(step)}
+                    onClick={() => step === "connect" && screen !== "connect" ? editConnection() : setScreen(step)}
                     className={cn(
                       "flex w-full items-center gap-3 rounded-md px-3 py-3 text-left text-sm",
                       step === screen
@@ -741,14 +747,19 @@ function Setup({
                             preferAdvanced
                             onChange={binding => {
                               if (binding.mode === "router") return;
-                              setConnection({ env: {}, aiConnection: binding });
-                              setRuntimeAiBinding(undefined);
+                              setConnection(null);
+                              setRuntimeAiBinding(binding);
                               resetTest();
                             }}
                           />
                         ),
                       }}
                       onBack={() => navigate("/agents/all")}
+                      onDraftChanged={() => {
+                        setConnection(null);
+                        setRuntimeAiBinding(undefined);
+                        resetTest();
+                      }}
                       testConnection={runTest}
                       testError={
                         error ??
@@ -1157,7 +1168,7 @@ function Setup({
                           type="button"
                           variant="ghost"
                           disabled={busy}
-                          onClick={() => setScreen("connect")}
+                          onClick={editConnection}
                         >
                           <ArrowLeft className="size-4" />
                           Connection

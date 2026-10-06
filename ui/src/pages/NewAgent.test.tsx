@@ -577,6 +577,43 @@ describe("New agent setup", () => {
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1].runtimeConfig.aiConnection).toEqual(binding);
   });
+  it("requires the current connection choice to connect before Configure can save it", async () => {
+    await render("codex_local");
+    managedApi.list.mockResolvedValue({ currentUserId: "user-1", connections: [{
+      id: "00000000-0000-4000-8000-000000000021", grantId: "00000000-0000-4000-8000-000000000022", companyId: "company-1",
+      provider: "openrouter", method: "api_key", name: "Company OpenRouter", ownership: "shared", isDefault: false, status: "connected",
+      routing: { kind: "openrouter", protocol: "responses", auth: "bearer", models: [] },
+    }] } as any);
+    await click("AdvancedCustom Gateway");
+    const picker = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+    await act(async () => picker.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle();
+    const option = [...document.querySelectorAll('[role="option"]')].find(node => node.textContent?.includes("Company OpenRouter")) as HTMLElement;
+    await act(async () => option.click());
+    await settle();
+    await click("2Configure");
+    expect(container.textContent).not.toContain("Finish setup");
+    expect(api.hire).not.toHaveBeenCalled();
+    await click("Connect model");
+    await click("OpenAIAPI key");
+    await fill("API key", "new-api-credential");
+    await click("2Configure");
+    expect(container.textContent).not.toContain("Finish setup");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    await click("Connect model");
+    await click("OpenAIAPI key");
+    await fill("API key", "new-api-credential");
+    await click("Connect");
+    await click("Connection");
+    await click("2Configure");
+    expect(container.textContent).not.toContain("Finish setup");
+    await click("Connect model");
+    await click("OpenAIAPI key");
+    await fill("API key", "new-api-credential");
+    await click("Connect");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].runtimeConfig.aiConnection).toEqual({ provider: "openai", method: "api_key", mode: "responsible_user" });
+  });
   it.each(["pi_local"])(
     "persists %s OpenRouter credentials only as a secret reference",
     async (adapter) => {

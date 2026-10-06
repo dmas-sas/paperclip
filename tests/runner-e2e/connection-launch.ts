@@ -21,9 +21,20 @@ import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
 type Row = Record<string, any>;
 
+export function connectionCreationReceipt(pathname: string, method: string, companyId: string, loginIds: ReadonlySet<string>, body: unknown): string | undefined {
+  const root = `/api/companies/${companyId}/ai-connections`;
+  const loginId = pathname.startsWith(`${root}/login/`) ? pathname.slice(`${root}/login/`.length) : undefined;
+  const createdHere = method === "POST" && (pathname === root || pathname === `${root}/local`);
+  const ownedLogin = method === "GET" && loginId && loginIds.has(loginId);
+  if (!createdHere && !ownedLogin) return;
+  const id = (body as { connectionId?: unknown } | null)?.connectionId;
+  return typeof id === "string" && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id) ? id : undefined;
+}
+
 export async function cleanupConnectionCompany(input: {
   api: ConnectionApi; companyId: string; agentName: string;
   attachedCompany: boolean; retainCompany: boolean;
+  createdConnectionIds: ReadonlySet<string>;
   evidence: Pick<ConnectionEvidence, "cleanupRetained" | "companyArchived">;
   collectDiagnostics: () => Promise<void>;
 }) {
@@ -45,10 +56,10 @@ export async function cleanupConnectionCompany(input: {
   }
   if (input.retainCompany) { evidence.cleanupRetained = true; return; }
   const connections = (await api.get(`/api/companies/${companyId}/ai-connections`)).connections;
-  for (const connection of connections.filter((connection: Row) => connection.status !== "revoked")) {
+  for (const connection of connections.filter((connection: Row) => input.createdConnectionIds.has(connection.id) && connection.status !== "revoked")) {
     await api.delete(`/api/tool-connections/${connection.id}`);
   }
-  if ((await api.get(`/api/companies/${companyId}/ai-connections`)).connections.some((connection: Row) => connection.status !== "revoked")) {
+  if ((await api.get(`/api/companies/${companyId}/ai-connections`)).connections.some((connection: Row) => input.createdConnectionIds.has(connection.id) && connection.status !== "revoked")) {
     throw new ConnectionFailure("connection_revocation_failed");
   }
   if (!input.attachedCompany) { await api.post(`/api/companies/${companyId}/archive`); evidence.companyArchived = true; }
@@ -128,6 +139,9 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
   let browser: Awaited<ReturnType<typeof openConnectionBrowser>> | undefined;
   let fixtures: Awaited<ReturnType<FixtureRegistry["setupAll"]>> | undefined;
   const observedRuns = new Map<string, Row>();
+  const createdConnectionIds = new Set<string>();
+  const ownedLoginIds = new Set<string>();
+  let fixtureCompanyId: string | undefined;
   let diagnosticApi: ConnectionApi | undefined;
   let diagnosticsCollected = false;
   const collectDiagnostics = async () => {
@@ -171,15 +185,33 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
     diagnosticApi = api;
     browser.context.on("response", response => {
       const url = new URL(response.url());
-      if (url.origin !== origin || response.request().method() !== "POST" || !response.ok()) return;
-      const local = /^\/api\/companies\/([a-f0-9-]+)\/ai-connections\/local\/attempts$/.test(url.pathname);
-      const cloud = /^\/api\/companies\/([a-f0-9-]+)\/(?:setup-token-login-sessions|adapters\/[^/]+\/login-sessions)$/.test(url.pathname);
-      if (!local && !cloud) return;
+      if (url.origin !== origin || !fixtureCompanyId || !url.pathname.startsWith(`/api/companies/${fixtureCompanyId}/`) || !response.ok()) return;
+      const method = response.request().method();
+      const local = method === "POST" && /^\/api\/companies\/([a-f0-9-]+)\/ai-connections\/local\/attempts$/.test(url.pathname);
+      const cloud = method === "POST" && /^\/api\/companies\/([a-f0-9-]+)\/(?:setup-token-login-sessions|adapters\/[^/]+\/login-sessions)$/.test(url.pathname);
+      const root = `/api/companies/${fixtureCompanyId}/ai-connections`;
+      const receipt = (method === "POST" && [root, `${root}/local`].includes(url.pathname)) || (method === "GET" && url.pathname.startsWith(`${root}/login/`));
+      if (!local && !cloud && !receipt) return;
       loginObservers.push((async () => {
         const body = await response.json();
-        if (typeof body.sessionId === "string" && /^[a-zA-Z0-9_-]+$/.test(body.sessionId)) loginSessions.set(`${url.pathname}/${body.sessionId}${cloud ? "/cancel" : ""}`, local ? "DELETE" : "POST");
+        if ((local || cloud) && typeof body.sessionId === "string" && /^[a-zA-Z0-9_-]+$/.test(body.sessionId)) {
+          ownedLoginIds.add(body.sessionId);
+          loginSessions.set(`${url.pathname}/${body.sessionId}${cloud ? "/cancel" : ""}`, local ? "DELETE" : "POST");
+        }
+        const id = connectionCreationReceipt(url.pathname, method, fixtureCompanyId!, ownedLoginIds, body);
+        if (id) createdConnectionIds.add(id);
       })().catch(() => {}));
     });
+    const refreshOwnedConnections = async () => {
+      if (!fixtureCompanyId) return;
+      for (const sessionId of ownedLoginIds) {
+        const route = `/api/companies/${fixtureCompanyId}/ai-connections/login/${sessionId}`;
+        try {
+          const id = connectionCreationReceipt(route, "GET", fixtureCompanyId, ownedLoginIds, await api.get(route));
+          if (id) createdConnectionIds.add(id);
+        } catch { /* An unfinished or cancelled owned login has no account receipt. */ }
+      }
+    };
     await page.goto(origin, { waitUntil: "domcontentloaded" });
     try { await api.get("/api/companies"); }
     catch (authError) {
@@ -201,19 +233,24 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
       if (attachedCompany) {
         const company = await api.get(`/api/companies/${attachedCompany}`);
         if (!company.name.startsWith("Connection QA") || (await api.get<Row[]>(`/api/companies/${company.id}/agents`)).some(agent => agent.status !== "terminated") || (await api.get(`/api/companies/${company.id}/ai-connections`)).connections.some((connection: Row) => connection.status !== "revoked")) throw new ConnectionBlock("blocked_target", "attach_requires_empty_dedicated_qa_company");
+        fixtureCompanyId = company.id;
         return company;
       }
-      return api.post("/api/companies", { name: `Connection QA ${nonce}`, description: "Disposable provider-connections QA fixture", budgetMonthlyCents: config.budgetCents });
+      const company = await api.post("/api/companies", { name: `Connection QA ${nonce}`, description: "Disposable provider-connections QA fixture", budgetMonthlyCents: config.budgetCents });
+      fixtureCompanyId = company.id;
+      return company;
     }, teardown: async company => {
       await Promise.all(loginObservers);
+      await refreshOwnedConnections();
       for (const [route, method] of loginSessions) {
         try { await api.response(route, method); }
         catch (error) { if (!(error instanceof ConnectionFailure) || error.message !== "api_status_404") throw error; }
       }
-      // The fixture verified the company was empty before running. Revoke all
-      // newly created test connections even if a later UI assertion failed.
+      await refreshOwnedConnections();
+      // Creation receipts identify this attempt even when concurrent campaigns
+      // passed the initial empty-company check at the same time.
       await cleanupConnectionCompany({ api, companyId: company.id, agentName: `Connection QA ${nonce}`,
-        attachedCompany: Boolean(attachedCompany), retainCompany: config.retainCompany, evidence, collectDiagnostics });
+        attachedCompany: Boolean(attachedCompany), retainCompany: config.retainCompany, createdConnectionIds, evidence, collectDiagnostics });
     } });
     registry.register<Row>({ id: "connection-environment", dependencies: ["connection-company"], setup: async values => {
       const company = values.get("connection-company") as Row;
@@ -234,7 +271,8 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
     const company = fixtures.values.get("connection-company") as Row;
     evidence.companyId = company.id;
     const environment = fixtures.values.get("connection-environment") as Row;
-    const observed = await runConnectionFlow({ page, api, execution, config, settings, company, environment, secret, nonce, privateDir, evidence, checkpoint, assertActive, observeRun: run => observedRuns.set(run.id, run) });
+    const observed = await runConnectionFlow({ page, api, execution, config, settings, company, environment, secret, nonce, privateDir, evidence, checkpoint, assertActive,
+      createdConnectionIds, refreshOwnedConnections, observeRun: run => observedRuns.set(run.id, run) });
     Object.assign(result, observed);
     evidence.outcome = "passed";
     if (!connectionEvidencePasses(evidence)) throw new ConnectionFailure("connection_proof_incomplete");

@@ -198,6 +198,9 @@ and reasoning are not copied into the result. An empty signal list leaves the
 cause unknown. Missing logs remain explicit and do not imply a healthy run.
 Attached-company cleanup captures these diagnostics after stopping runs and
 before deleting the fixture agent, since agent deletion also removes its logs.
+Cleanup revokes only this attempt's account IDs from successful creation or
+owned sign-in receipts. Concurrent campaigns' accounts are never adopted or
+revoked, even if both campaigns initially observed an empty QA company.
 UI probes may incur unreported spend, so billing is explicitly partial.
 Regenerate the report from retained results with
 `pnpm test:e2e:runner:dashboard -- /absolute/path/to/connections-campaign`.

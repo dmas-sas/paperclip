@@ -41,6 +41,7 @@ export function AgentProviderConnection({
   canLogin,
   localEnvironment = false,
   onConnected,
+  onDraftChanged,
   onBack,
   testConnection,
   testError,
@@ -53,6 +54,7 @@ export function AgentProviderConnection({
   canLogin: boolean;
   localEnvironment?: boolean;
   onConnected: (connection: ProviderConnection) => void;
+  onDraftChanged?: () => void;
   onBack: () => void;
   testConnection: (connection: ProviderConnection) => Promise<boolean>;
   testError?: string | null;
@@ -235,6 +237,7 @@ export function AgentProviderConnection({
     (Boolean(managedAccount) || auth.data?.status !== "present" || subscriptionId === "");
   const switchMode = (next: ModelConnectionMode) => {
     if (advancedConnection && next === (advanced ? "advanced" : method)) return;
+    onDraftChanged?.();
     cancel();
     setAdvanced(next === "advanced");
     setOpened(advancedConnection ? true : opened);
@@ -296,7 +299,7 @@ export function AgentProviderConnection({
             <SavedProviderKeySelect
               options={savedKeys.subscriptions}
               value={savedSubscription?.id ?? ""}
-              onChange={setSubscriptionId}
+              onChange={(id) => { onDraftChanged?.(); setSubscriptionId(id); }}
               loading={false}
               error={false}
               kind="subscription"
@@ -325,6 +328,7 @@ export function AgentProviderConnection({
                   value={selectedKey?.id ?? ""}
                   disabled={busy}
                   onChange={(id) => {
+                    onDraftChanged?.();
                     setSelectedKeyId(id);
                     setApiKey("");
                     setStoredConnection(null);
@@ -343,6 +347,7 @@ export function AgentProviderConnection({
                         : "Enter API key here"
                     }
                     onChange={(value) => {
+                      onDraftChanged?.();
                       setSelectedKeyId("");
                       setApiKey(value);
                       setStoredConnection(null);

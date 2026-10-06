@@ -18,6 +18,8 @@ export interface ConnectionFlowInput {
   evidence: ConnectionEvidence;
   checkpoint(phase: string): Promise<void>;
   observeRun(run: Row): void;
+  createdConnectionIds: ReadonlySet<string>;
+  refreshOwnedConnections(): Promise<void>;
   assertActive(): void;
 }
 
@@ -69,8 +71,9 @@ async function waitForFreshConnection(input: ConnectionFlowInput, before: Set<st
   let connected = false;
   while (Date.now() < deadline) {
     input.assertActive();
+    await input.refreshOwnedConnections();
     const list = await api.get(`/api/companies/${company.id}/ai-connections`);
-    const fresh = list.connections.filter((c: Row) => !before.has(c.id));
+    const fresh = list.connections.filter((c: Row) => !before.has(c.id) && input.createdConnectionIds.has(c.id));
     if (fresh.length > 1) throw new ConnectionFailure("unexpected_multiple_connections");
     if (fresh.length === 1) {
       const connection = fresh[0];
