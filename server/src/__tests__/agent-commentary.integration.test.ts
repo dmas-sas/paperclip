@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { and, eq, sql } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
-import { activityLog, agentApiKeys, agentCommentary, agents, heartbeatRuns, issues, nativeRunResults } from "@paperclipai/db";
+import { activityLog, agentApiKeys, agentCommentary, agents, authUsers, companyMemberships, heartbeatRuns, issues, nativeRunResults } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { submitAgentCommentary } from "../services/agent-commentary.js";
@@ -139,6 +139,28 @@ describe("internal agent commentary through both transports", () => {
     await server.db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
     await expect(f.authority.execute({ tool: "submit_complaint", callId: "paused", arguments: input })).rejects.toThrow(/not_authorized/);
     expect(await rows(f)).toHaveLength(0);
+  });
+
+  it.each(["jwt", "api_key"])("rejects new feedback and replay with %s after Stop revokes a still-running legacy run", async (credential) => {
+    const f = await legacy();
+    if (credential === "api_key") {
+      f.token = `pcp_${randomUUID()}`;
+      const responsibleUserId = randomUUID();
+      await server.db.insert(authUsers).values({ id: responsibleUserId, name: "Feedback key owner", email: `${responsibleUserId}@fixture.invalid`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
+      await server.db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: responsibleUserId, status: "active", membershipRole: "member" });
+      await server.db.insert(agentApiKeys).values({ companyId: f.companyId, agentId: f.agentId, responsibleUserId, name: "feedback", keyHash: createHash("sha256").update(f.token).digest("hex") });
+    }
+    expect((await post(f, { ...input, kind: "complaint" })).status).toBe(201);
+    await server.db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" } } }).where(eq(heartbeatRuns.id, f.runId));
+    for (const idempotencyKey of [input.idempotencyKey, "after-stop"]) {
+      const body = { ...input, kind: "complaint", idempotencyKey };
+      expect((await post(f, body)).status).toBe(403);
+      // The persistence boundary must also reject a request whose middleware
+      // authenticated before Stop committed the revocation.
+      await expect(submitAgentCommentary(server.db, f, body)).rejects.toThrow(/no longer authorized/);
+    }
+    expect(await rows(f)).toHaveLength(1);
+    expect(await server.db.select().from(activityLog).where(and(eq(activityLog.runId, f.runId), eq(activityLog.action, "agent.commentary_submitted")))).toHaveLength(1);
   });
 
   it("rejects revoked legacy credentials, replaced run ownership, and specialized review tools", async () => {

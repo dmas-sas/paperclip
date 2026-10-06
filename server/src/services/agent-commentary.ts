@@ -6,6 +6,7 @@ import { badRequest, conflict, forbidden, HttpError } from "../errors.js";
 import { redactSensitiveText } from "../redaction.js";
 import { persistActivity, publishActivity } from "./activity-log.js";
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
+import { agentRunWritesRevoked } from "../agent-run-cancellation.js";
 
 type CommentaryActor = { companyId: string; agentId: string; runId: string; agentApiKeyId?: string | null };
 
@@ -45,6 +46,7 @@ export async function submitAgentCommentary(
         .innerJoin(agents, and(eq(agents.id, heartbeatRuns.agentId), eq(agents.companyId, heartbeatRuns.companyId)))
         .where(predicate).for("update");
       if (!context || context.run.status !== "running"
+        || agentRunWritesRevoked(context.run)
         || ["paused", "terminated", "pending_approval", "error"].includes(context.agent.status)
         || boundIssue(context.run) !== issueId
         || (issueId && !issue)
