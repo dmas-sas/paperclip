@@ -226,6 +226,8 @@ describe("internal agent commentary through both transports", () => {
       });
     }
     expect(await run(server.apiUrl)).toEqual({ code: 0, out: "Feedback stored.\n", err: "" });
+    expect(await run(server.apiUrl + "/api/")).toEqual({ code: 0, out: "Feedback stored.\n", err: "" });
+    expect(await rows(f)).toHaveLength(1);
     expect((await rows(f))[0].body).toBe(body);
     const failed = await run("http://127.0.0.1:1");
     expect(failed).toMatchObject({ code: 0, out: "" });

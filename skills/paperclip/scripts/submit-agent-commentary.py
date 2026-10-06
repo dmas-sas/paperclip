@@ -18,6 +18,8 @@ def main():
         if len(raw) > 4 * 524288 or not body.strip() or len(body.encode("utf-16-le")) // 2 > 524288:
             raise ValueError()
         api_url = os.environ["PAPERCLIP_API_URL"].rstrip("/")
+        if api_url.endswith("/api"):
+            api_url = api_url[:-4]
         company_id = str(uuid.UUID(os.environ["PAPERCLIP_COMPANY_ID"]))
         run_id = str(uuid.UUID(os.environ["PAPERCLIP_RUN_ID"]))
         key = sys.argv[2] if len(sys.argv) > 2 else str(uuid.uuid4())

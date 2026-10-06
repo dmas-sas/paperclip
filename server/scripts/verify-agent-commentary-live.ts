@@ -20,18 +20,7 @@ import { ensureNativeCompletionContract } from "../src/services/native-runtime/c
 import { redactSensitiveText } from "../src/redaction.js";
 
 const root = await mkdtemp(join(tmpdir(), "paperclip-commentary-live-"));
-const authSource = process.env.PAPERCLIP_LIVE_CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
-const codexHome = join(root, "codex");
-await mkdir(codexHome, { mode: 0o700 });
-await copyFile(join(authSource, "auth.json"), join(codexHome, "auth.json"));
-await writeFile(join(codexHome, "config.toml"), 'model_reasoning_effort = "low"\n');
-process.env.PAPERCLIP_HOME = join(root, "instance");
-process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID();
-process.env.PAPERCLIP_CODEX_AUTH_CACHE = "false";
-process.env.PAPERCLIP_TELEMETRY_DISABLED = "1";
-const server = await startRunnerApiTestServer();
-process.env.PAPERCLIP_API_URL = server.apiUrl;
-const evidence: unknown[] = [];
+let server: Awaited<ReturnType<typeof startRunnerApiTestServer>> | undefined;
 async function makeRemovable(path: string): Promise<void> {
   const stat = await lstat(path);
   if (stat.isSymbolicLink()) return;
@@ -41,6 +30,18 @@ async function makeRemovable(path: string): Promise<void> {
   }
 }
 try {
+  const authSource = process.env.PAPERCLIP_LIVE_CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
+  const codexHome = join(root, "codex");
+  await mkdir(codexHome, { mode: 0o700 });
+  await copyFile(join(authSource, "auth.json"), join(codexHome, "auth.json"));
+  await writeFile(join(codexHome, "config.toml"), 'model_reasoning_effort = "low"\n');
+  process.env.PAPERCLIP_HOME = join(root, "instance");
+  process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID();
+  process.env.PAPERCLIP_CODEX_AUTH_CACHE = "false";
+  process.env.PAPERCLIP_TELEMETRY_DISABLED = "1";
+  server = await startRunnerApiTestServer();
+  process.env.PAPERCLIP_API_URL = server.apiUrl;
+  const evidence: unknown[] = [];
   for (const mode of ["legacy", "native"] as const) {
     if (process.argv[2] && process.argv[2] !== mode) continue;
     const f = await server.fixture({ disableWakeOnDemand: true });
@@ -104,7 +105,10 @@ try {
   }
   console.log(JSON.stringify({ verifiedAt: new Date().toISOString(), evidence }, null, 2));
 } finally {
-  await server.close();
-  await makeRemovable(root);
-  await rm(root, { recursive: true, force: true });
+  try {
+    await server?.close();
+  } finally {
+    await makeRemovable(root);
+    await rm(root, { recursive: true, force: true });
+  }
 }
