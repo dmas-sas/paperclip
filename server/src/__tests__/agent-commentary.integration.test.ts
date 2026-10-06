@@ -55,7 +55,7 @@ describe("internal agent commentary through both transports", () => {
   it("can reapply the generated migration without losing data", async () => {
     const f = await legacy();
     await post(f, { ...input, kind: "complaint" });
-    const migration = await readFile(new URL("../../../packages/db/src/migrations/0306_agent_commentary.sql", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0310_agent_commentary.sql", import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint")) {
       if (statement.trim()) await server.db.execute(sql.raw(statement));
     }
