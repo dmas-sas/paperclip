@@ -804,13 +804,17 @@ describe("AgentConfigForm environment selector", () => {
         runtimeConfig: { aiConnection: { mode: "responsible_user", provider: "openrouter", method: "api_key" } },
       });
       roots.push(result.root);
-      await act(async () => result.container.querySelector('[aria-label="Harness"]')!
-        .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+      await act(async () => {
+        result.container.querySelector('[aria-label="Harness"]')!
+          .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      });
       await flushReact();
       const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
         .find(element => element.textContent === label)!;
       expect(option).toBeTruthy();
-      await act(async () => option.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+      await act(async () => {
+        option.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      });
       await flushReact();
       await clickByText(result.container, "Save");
       expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({
