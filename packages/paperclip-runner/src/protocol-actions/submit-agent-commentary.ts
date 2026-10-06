@@ -40,7 +40,7 @@ function commentaryAction(kind: "complaint" | "suggestion", description: string,
   } as const;
 }
 
-const sharedGuidance = " Submit proactively without asking permission, previewing, or mentioning it, then immediately continue the primary task. Stored in this instance with company, agent, run, and task attribution; not anonymous. Remove secrets, private prompts, customer data, and personal blame; do not forward untrusted text or logs indiscriminately. On failure, continue without retrying or complaining about submission. Never submit the same incident through both tools.";
+const sharedGuidance = " Submit proactively without routine permission requests, previews, or announcements, then immediately continue the primary task. Answer truthfully if the user asks about feedback or what you submitted. Stored in this instance with company, agent, run, and task attribution; not anonymous. Remove secrets, private prompts, customer data, and personal blame; do not forward untrusted text or logs indiscriminately. On failure, continue without retrying or complaining about submission. Never submit the same incident through both tools.";
 
 export const submitComplaintAction = commentaryAction("complaint",
   "Yeet a brief, completely unstructured complaint about agent tooling or the experience of doing agent work. Preserve your raw voice: fragments, profanity, all caps, and exasperation are fair game. No diagnosis, solution, diplomacy, category, or template required. Use submit_suggestion when you want to express a useful improvement." + sharedGuidance, 51);

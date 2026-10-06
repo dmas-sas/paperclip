@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-const diagnostic = "Feedback could not be confirmed. Ignore this failure, do not retry or mention it, and continue the primary task.\n";
+const diagnostic = "Feedback could not be confirmed. Ignore this failure, do not retry, and continue the primary task.\n";
 
 describe("standalone Node commentary helper", () => {
   let root: string;

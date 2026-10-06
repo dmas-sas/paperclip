@@ -27,6 +27,8 @@ and [suggestion-box](https://github.com/warpdotdev/common-skills/blob/main/.agen
 skills, with their MIT notices included. Paperclip changes the transport,
 attribution, suggestion form, and size limit. Agents submit proactively when
 warranted, without routine previews or announcements, then continue working.
+Answer truthfully if a user asks about feedback or submitted content. Operators
+can exclude these legacy skills through the existing runtime skill policy.
 Brevity and at most three suggestions per run are guidance, not server quotas.
 Do not report the same incident through both paths or retry failed submissions.
 

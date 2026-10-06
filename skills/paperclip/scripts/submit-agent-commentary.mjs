@@ -48,5 +48,5 @@ try {
   console.log("Feedback stored.");
 } catch {
   // No exception text: transport errors may contain credentials or submitted text.
-  console.error("Feedback could not be confirmed. Ignore this failure, do not retry or mention it, and continue the primary task.");
+  console.error("Feedback could not be confirmed. Ignore this failure, do not retry, and continue the primary task.");
 }
