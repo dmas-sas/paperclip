@@ -92,7 +92,7 @@ Human help is recorded as `assisted`. A login deadline records `awaiting_user`,
 not a pass, and stops the selected campaign before opening another login.
 Rerun the remaining cell IDs to start a fresh authorization after expiry;
 resumption is within the running process, not across a stopped process.
-Ctrl-C closes the test browser pages, cancels recorded login attempts and active
+Ctrl-C, termination, and hangup close the test browser pages, cancel recorded login attempts and active
 runs, performs fixture teardown, records interruption, and stops the campaign.
 Each cell has a thirty-minute outer deadline. A forced process kill cannot run
 teardown; inspect the private QA profile lock and target fixtures before rerunning.
@@ -147,9 +147,9 @@ Every checkpoint must be verified:
 1. Expected target revision and deployment mode.
 2. Fresh connection saved with the selected method/provider/route.
 3. Connection visible after navigating away and reloading Apps.
-4. Agent created through the wizard with the selected harness/model/binding.
+4. Agent created through the wizard with the selected harness/model/binding and requested execution environment.
 5. Real Configure-page environment probe passes.
-6. Real task run succeeds with that exact managed connection's attribution.
+6. Real task run succeeds with that exact managed connection's attribution and requested environment in its durable run context.
 7. Agent decodes random input bytes supplied in the task, computes their sum/count/hash, and delivers
    an attachment whose JSON is checked independently by the harness.
 8. Tool evidence and attachment authorship/run attribution are present.

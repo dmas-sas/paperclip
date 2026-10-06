@@ -577,6 +577,13 @@ remote URLs; loopback endpoints may use HTTP. Localhost refers to the agent’s
 execution environment, including when it is a sandbox. URLs cannot contain user
 credentials, query parameters, or fragments.
 
+Grok continuation history is encrypted in the server-owned task-session record.
+The archive is scoped to the company, agent, task, and selected account identity.
+The server restores only that archive into a disposable private runtime home.
+It excludes credentials, symlinks, and hard links and limits archive size and entry
+count. Runtime homes do not link to a shared plaintext history directory. A bounded
+history lookup can start a fresh session rather than fail the task.
+
 Runtime projection clears alternate provider credentials and routing overrides,
 uses disposable homes, and never falls back to host authentication. Codex probes
 retain the selected provider home. The new runner copies only the validated
