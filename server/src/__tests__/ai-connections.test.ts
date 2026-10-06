@@ -4,11 +4,11 @@ import { issueRecoveryActionService } from "../services/issue-recovery-actions.j
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, realpath, rm, access, readFile, writeFile, stat, readlink, readdir } from "node:fs/promises";
+import { mkdtemp, realpath, rm, access, readFile, writeFile, stat, readdir, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
@@ -50,29 +50,68 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
-  it("retains only Grok sessions across private runtime homes and isolates agents and accounts", async () => {
+  it.each([
+    ["openai", "codex_local", "responses"],
+    ["anthropic", "claude_local", "anthropic_messages"],
+    ["openrouter", "opencode_local", "chat_completions"],
+  ] as const)("prepares a no-auth %s endpoint without a vault secret", async (provider, adapterType, protocol) => {
+    const account = await service.save(companyId, "alice", {
+      provider, method: "api_key", ownership: "personal", name: `No-auth ${provider}`,
+      agentIds: [], allAgents: true,
+      routing: { kind: "local", protocol, baseUrl: "http://127.0.0.1:9000/v1", auth: "none" },
+    }, "");
+    const binding = { provider, method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId } as const;
+    const config = { model: "fixture-model", env: { OPENAI_API_KEY: "host-key", ANTHROPIC_API_KEY: "host-key" } };
+    const first = await prepareManagedAiRuntime(db, { ...input, adapterType, responsibleUserId: "alice", binding, config });
+    const second = await prepareManagedAiRuntime(db, { ...input, adapterType, responsibleUserId: "alice", binding, config });
+    try {
+      expect(first.sessionIdentity).toBe(second.sessionIdentity);
+      expect(first.sessionIdentity).toContain("no-auth");
+      expect(JSON.stringify(first.config)).not.toContain("host-key");
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId));
+      expect(grant.credentialSecretRefs).toEqual([]);
+    } finally { await Promise.all([first.cleanup(), second.cleanup()]); }
+  });
+  it("encrypts retained Grok history and restores only the authorized agent, task, and account", async () => {
     const save = (name: string) => service.save(companyId, "alice", { provider: "xai", method: "api_key", ownership: "personal", name, agentIds: [], allAgents: true }, `fixture-${name}`);
     const account = await save("Grok history");
     const other = await save("Other Grok history");
-    const runInput = { ...input, adapterType: "grok_local", responsibleUserId: "alice", config: {}, binding: { provider: "xai", method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId } as const };
+    const taskKey = `grok-history-${randomUUID()}`;
+    await db.insert(agentTaskSessions).values({ companyId, agentId, adapterType: "grok_local", taskKey, sessionParamsJson: {} });
+    const runInput = { ...input, taskKey, adapterType: "grok_local", responsibleUserId: "alice", config: {}, binding: { provider: "xai", method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId } as const };
     const first = await prepareManagedAiRuntime(db, runInput);
-    const sessions = await readlink(path.join(String(first.config.env.GROK_HOME), "sessions"));
+    const sessions = path.join(String(first.config.env.GROK_HOME), "sessions");
+    expect((await stat(sessions)).isDirectory()).toBe(true);
     await writeFile(path.join(sessions, "history.json"), '{"fixture":"history"}', { mode: 0o600 });
+    // Never retain a symlink to another agent's transcript or a credential file.
+    const outside = path.join(home, "sibling-transcript.json");
+    await writeFile(outside, "sibling-private-history", { mode: 0o600 });
+    await symlink(outside, path.join(sessions, "sibling-link.json"));
     await writeFile(path.join(String(first.config.env.GROK_HOME), "auth.json"), "disposable-auth", { mode: 0o600 });
+    const checkpoint = await first.checkpointSessionHistory!();
+    await db.update(agentTaskSessions).set({ sessionParamsJson: { sessionId: "history", ...checkpoint } }).where(eq(agentTaskSessions.taskKey, taskKey));
     await first.cleanup();
     await expect(access(first.home!)).rejects.toThrow();
-    expect(await readdir(sessions)).toEqual(["history.json"]);
-    expect((await stat(sessions)).mode & 0o777).toBe(0o700);
+    await expect(access(sessions)).rejects.toThrow();
+    const [stored] = await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.taskKey, taskKey));
+    expect(JSON.stringify(stored.sessionParamsJson)).not.toContain("fixture");
+    expect(JSON.stringify(stored.sessionParamsJson)).not.toContain("sibling-private-history");
+    expect(stored.sessionParamsJson?.paperclipGrokHistory).toMatchObject({ material: { scheme: "local_encrypted_v1" } });
     const resumed = await prepareManagedAiRuntime(db, runInput);
     const otherAgent = await prepareManagedAiRuntime(db, { ...runInput, agentId: randomUUID() });
     const otherAccount = await prepareManagedAiRuntime(db, { ...runInput, binding: { ...runInput.binding, connectionId: other.connectionId, grantId: other.grantId } });
+    const otherTask = await prepareManagedAiRuntime(db, { ...runInput, taskKey: "another-task" });
     try {
       expect(resumed.home).not.toBe(first.home);
-      expect(await readlink(path.join(String(resumed.config.env.GROK_HOME), "sessions"))).toBe(sessions);
-      expect(await readlink(path.join(String(otherAgent.config.env.GROK_HOME), "sessions"))).not.toBe(sessions);
-      expect(await readlink(path.join(String(otherAccount.config.env.GROK_HOME), "sessions"))).not.toBe(sessions);
+      const restored = path.join(String(resumed.config.env.GROK_HOME), "sessions");
+      expect(await readdir(restored)).toEqual(["history.json"]);
+      expect(await readFile(path.join(restored, "history.json"), "utf8")).toBe('{"fixture":"history"}');
+      expect((await stat(restored)).mode & 0o777).toBe(0o700);
+      for (const runtime of [otherAgent, otherAccount, otherTask]) {
+        expect(await readdir(path.join(String(runtime.config.env.GROK_HOME), "sessions"))).toEqual([]);
+      }
       await expect(access(path.join(String(resumed.config.env.GROK_HOME), "auth.json"))).rejects.toThrow();
-    } finally { await Promise.all([resumed.cleanup(), otherAgent.cleanup(), otherAccount.cleanup()]); }
+    } finally { await Promise.all([resumed.cleanup(), otherAgent.cleanup(), otherAccount.cleanup(), otherTask.cleanup()]); }
   });
   it("authenticates local Gemini probes and runs with the saved key in an isolated home", async () => {
     const root = await mkdtemp(path.join(home, "gemini-auth-"));

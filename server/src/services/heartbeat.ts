@@ -21764,7 +21764,7 @@ export function heartbeatService(
       readFailureReportSecrets = () => collectRunFailureSecretValues(resolvedConfig.env, secretKeys);
       if (aiBinding) {
         try {
-          managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });
+          managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig, taskKey });
         } catch (error) {
           // Only fresh executions can receive a pre-provider wait receipt. A
           // persisted native input may already have provider effects to recover.
@@ -26069,12 +26069,14 @@ export function heartbeatService(
                 agentId: agent.id,
                 adapterType: agent.adapterType,
                 taskKey,
-                sessionParamsJson:
-                  attachPaperclipSessionMetadataToSessionParams(
+                sessionParamsJson: {
+                  ...attachPaperclipSessionMetadataToSessionParams(
                     nextSessionState.params,
                     configuredModel,
                     sessionConfigMetadata,
                   ),
+                  ...await managedAiRuntime?.checkpointSessionHistory?.(),
+                },
                 sessionDisplayId: nextSessionState.displayId,
                 lastRunId: finalizedRun.id,
                 lastError: runErrorMessage,

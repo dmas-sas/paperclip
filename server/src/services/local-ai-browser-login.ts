@@ -80,7 +80,12 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai", home: s
     void runSetupTokenLogin(driver, {
       timeoutMs: 300_000, signal: controller.signal,
       onPrompt: (prompt) => { state.authorizationUrl = prompt.url; },
-      provideCode: () => codeReady,
+      provideCode: (signal) => new Promise<string>((resolve, reject) => {
+        const abort = () => reject(new Error("Local sign-in cancelled"));
+        if (signal.aborted) { abort(); return; }
+        signal.addEventListener("abort", abort, { once: true });
+        codeReady.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+      }),
       onCredential: async (bytes) => {
         const file = await open(path.join(home, ".credentials.json"),
           constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);

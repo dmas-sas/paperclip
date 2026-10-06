@@ -26,7 +26,7 @@ export async function grokHomeHasSession(home: string, sessionId: string): Promi
       throw error;
     }
     for await (const entry of entries) {
-      if (--remaining < 0) throw new Error("Grok session history exceeds its lookup bound");
+      if (--remaining < 0) return false;
       if (entry.isSymbolicLink()) continue;
       if ((entry.isFile() || entry.isDirectory()) &&
           (entry.name === sessionId || entry.name.startsWith(`${sessionId}.`))) return true;
