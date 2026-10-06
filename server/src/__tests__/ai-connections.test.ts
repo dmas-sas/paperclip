@@ -52,13 +52,13 @@ afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) 
 describe("managed AI connections", () => {
   it.each([
     ["openai", "codex_local", "responses"],
-    ["anthropic", "claude_local", "anthropic_messages"],
-    ["openrouter", "opencode_local", "chat_completions"],
+    ["anthropic", "claude_local", "messages"],
+    ["openai", "opencode_local", "chat"],
   ] as const)("prepares a no-auth %s endpoint without a vault secret", async (provider, adapterType, protocol) => {
     const account = await service.save(companyId, "alice", {
-      provider, method: "api_key", ownership: "personal", name: `No-auth ${provider}`,
+      provider, method: "api_key", ownership: "personal", name: `No-auth ${adapterType}`,
       agentIds: [], allAgents: true,
-      routing: { kind: "local", protocol, baseUrl: "http://127.0.0.1:9000/v1", auth: "none" },
+      routing: { kind: "local", protocol, baseUrl: "http://127.0.0.1:9000/v1", auth: "none", models: [] },
     }, "");
     const binding = { provider, method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId } as const;
     const config = { model: "fixture-model", env: { OPENAI_API_KEY: "host-key", ANTHROPIC_API_KEY: "host-key" } };
