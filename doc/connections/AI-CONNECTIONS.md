@@ -582,7 +582,10 @@ The archive is scoped to the company, agent, task, and selected account identity
 The server restores only that archive into a disposable private runtime home.
 It excludes credentials, symlinks, and hard links and limits archive size and entry
 count. Runtime homes do not link to a shared plaintext history directory. A bounded
-history lookup can start a fresh session rather than fail the task.
+history lookup can start a fresh session rather than fail the task. If a checkpoint
+exceeds 16 MiB or 5,000 entries, the server still saves the provider session metadata.
+It records a warning and marks the transcript unavailable. The next run starts a
+fresh session with the task handoff instead of restoring a partial archive.
 
 Runtime projection clears alternate provider credentials and routing overrides,
 uses disposable homes, and never falls back to host authentication. Codex probes

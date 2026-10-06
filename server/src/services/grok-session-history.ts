@@ -10,6 +10,7 @@ import type { StoredSecretVersionMaterial } from "../secrets/types.js";
 const MAX_BYTES = 16 * 1024 * 1024;
 const MAX_ENTRIES = 5000;
 const FIELD = "paperclipGrokHistory";
+class GrokHistoryLimitError extends Error {}
 type Entry = { name: string; bytes: string };
 
 function validName(name: string) {
@@ -59,7 +60,7 @@ export async function prepareGrokSessionHistory(db: Db, input: {
     let count = 0;
     async function collect(relative = "") {
       for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
-        if (++count > MAX_ENTRIES) throw new Error("Grok history exceeds its entry bound");
+        if (++count > MAX_ENTRIES) throw new GrokHistoryLimitError("Grok history exceeds its entry bound");
         const name = relative ? `${relative}/${entry.name}` : entry.name;
         if (!validName(name) || entry.isSymbolicLink()) continue;
         const source = path.join(root, name);
@@ -69,19 +70,25 @@ export async function prepareGrokSessionHistory(db: Db, input: {
         try {
           const stat = await file.stat();
           if (!stat.isFile() || stat.nlink !== 1) continue;
-          if (size + stat.size > MAX_BYTES) throw new Error("Grok history exceeds its storage bound");
+          if (size + stat.size > MAX_BYTES) throw new GrokHistoryLimitError("Grok history exceeds its storage bound");
           const bytes = await file.readFile();
           size += bytes.length;
-          if (size > MAX_BYTES) throw new Error("Grok history exceeds its storage bound");
+          if (size > MAX_BYTES) throw new GrokHistoryLimitError("Grok history exceeds its storage bound");
           entries.push({ name, bytes: bytes.toString("base64") });
         } finally { await file.close(); }
       }
     }
-    await collect();
+    try { await collect(); }
+    catch (error) {
+      if (!(error instanceof GrokHistoryLimitError)) throw error;
+      // Save provider metadata normally, but explicitly discard the unusable
+      // transcript. The adapter starts with a fresh task handoff next time.
+      return { [FIELD]: null, paperclipGrokHistoryStatus: "fresh_session_required" };
+    }
     if (entries.length === 0) return;
     const prepared = await localEncryptedProvider.createVersion({ value: JSON.stringify({ scope, entries }) });
     // The heartbeat writes this with the provider session's checkpoint before
     // releasing execution ownership. Cleanup must not race a subsequent resume.
-    return { [FIELD]: { scope, material: prepared.material } };
+    return { [FIELD]: { scope, material: prepared.material }, paperclipGrokHistoryStatus: "retained" };
   };
 }

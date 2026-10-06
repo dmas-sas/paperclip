@@ -26064,6 +26064,7 @@ export function heartbeatService(
                 expectedRunId: finalizedRun.id,
               });
             } else {
+              const historyCheckpoint = await managedAiRuntime?.checkpointSessionHistory?.();
               await upsertTaskSession({
                 companyId: agent.companyId,
                 agentId: agent.id,
@@ -26075,12 +26076,20 @@ export function heartbeatService(
                     configuredModel,
                     sessionConfigMetadata,
                   ),
-                  ...await managedAiRuntime?.checkpointSessionHistory?.(),
+                  ...historyCheckpoint,
                 },
                 sessionDisplayId: nextSessionState.displayId,
                 lastRunId: finalizedRun.id,
                 lastError: runErrorMessage,
               });
+              if (historyCheckpoint?.paperclipGrokHistoryStatus === "fresh_session_required") {
+                await appendRunEvent(finalizedRun, {
+                  eventType: "session_history_limit",
+                  stream: "system",
+                  level: "warn",
+                  message: "Grok history exceeded its retention limit. The next run will start a fresh session with the task handoff.",
+                }).catch((error) => logger.warn({ error, runId: finalizedRun.id }, "Could not record Grok history limit"));
+              }
             }
           }
         }
