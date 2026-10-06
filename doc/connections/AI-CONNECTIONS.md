@@ -554,6 +554,14 @@ personal defaults. Reconnect replaces credentials and preserves destination;
 changing destination requires a separate connection. Credentials are never
 submitted to a new URL as part of reconnect.
 
+Native OpenCode custom gateways keep the reusable key in the runner process.
+The harness configuration contains a session-scoped loopback capability, limited
+to the configured model's Chat Completions endpoint. Streaming and provider error
+status are preserved; redirects are rejected. Closing or failing the harness
+revokes the capability and aborts outstanding requests. This bounds key exposure
+from shell tools reading the configuration; it is not an OS isolation boundary
+against a process debugger running as the runner user.
+
 Only fixed official provider endpoints receive control-plane key checks. Custom
 endpoints and Bedrock are exercised by the selected harness in the selected
 execution environment, through **Run test**. Saving a custom connection records

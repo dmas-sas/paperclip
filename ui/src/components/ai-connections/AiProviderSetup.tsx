@@ -312,7 +312,7 @@ export function AiProviderSetup({
           environmentId={environmentId}
           onCancel={cancel}
           defaults={accessDefaults}
-          disabled={!reconnect && !allAgents && agentIds.size === 0}
+          disabled={!reconnect && ownership === "shared" && !allAgents && agentIds.size === 0}
           onComplete={complete}
         />
       ) : (
