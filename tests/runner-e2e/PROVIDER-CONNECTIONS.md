@@ -367,10 +367,16 @@ qualifies a journey.
 The fixes refresh Codex's current skill root on resumed turns, keep artifact
 helper temporary files inside the selected workspace, allow native OpenCode's
 assigned workspace under both its supplied and canonical filesystem paths,
-and preserve Grok session transcripts in private company/agent/credential-scoped
-storage while keeping credentials disposable. Missing managed local Grok
-history starts a fresh task handoff instead of triggering remote subscription
-recovery during an API-key turn.
+and keep credentials disposable. Missing managed local Grok history starts a
+fresh task handoff instead of triggering remote subscription recovery during an
+API-key turn.
+
+On 2026-10-06, host-side Grok transcript retention/restoration was removed after
+security review: other agents running as the same OS user could read restored
+transcripts regardless of private file modes. Managed Grok follow-ups now start
+fresh with the Paperclip task handoff. The historical Grok passes above precede
+this change and do not qualify current transcript continuation; an isolated
+history solution and new live qualification remain required.
 
 Gemini now receives its selected model through `GEMINI_MODEL` before ACP startup
 instead of an unsupported `session/set_config_option` call. Real tasks confirmed

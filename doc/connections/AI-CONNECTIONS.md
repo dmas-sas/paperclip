@@ -588,15 +588,14 @@ remote URLs; loopback endpoints may use HTTP. Localhost refers to the agent’s
 execution environment, including when it is a sandbox. URLs cannot contain user
 credentials, query parameters, or fragments.
 
-Grok continuation history is encrypted in the server-owned task-session record.
-The archive is scoped to the company, agent, task, and selected account identity.
-The server restores only that archive into a disposable private runtime home.
-It excludes credentials, symlinks, and hard links and limits archive size and entry
-count. Runtime homes do not link to a shared plaintext history directory. A bounded
-history lookup can start a fresh session rather than fail the task. If a checkpoint
-exceeds 16 MiB or 5,000 entries, the server still saves the provider session metadata.
-It records a warning and marks the transcript unavailable. The next run starts a
-fresh session with the task handoff instead of restoring a partial archive.
+Managed Grok uses a disposable runtime home. Paperclip does not retain or restore
+Grok transcript files into host temporary directories: private file modes do not
+isolate agents running as the same OS user. Archives from earlier development
+builds are ignored. Provider session metadata still saves normally. If the selected
+session has no history in its current execution environment, Grok starts a fresh
+session with the Paperclip task handoff rather than attempting remote subscription
+recovery. Transcript continuation requires an isolated provider history solution
+and is not qualified by this change.
 
 Runtime projection clears alternate provider credentials and routing overrides,
 uses disposable homes, and never falls back to host authentication. Codex probes

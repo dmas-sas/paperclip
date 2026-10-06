@@ -4,8 +4,10 @@ import { issueRecoveryActionService } from "../services/issue-recovery-actions.j
 import { localAiLoginService } from "../services/local-ai-login.js";
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, realpath, rm, access, readFile, writeFile, stat, readdir, symlink, truncate } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
+import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -73,74 +75,43 @@ describe("managed AI connections", () => {
       expect(grant.credentialSecretRefs).toEqual([]);
     } finally { await Promise.all([first.cleanup(), second.cleanup()]); }
   });
-  it("encrypts retained Grok history and restores only the authorized agent, task, and account", async () => {
-    const save = (name: string) => service.save(companyId, "alice", { provider: "xai", method: "api_key", ownership: "personal", name, agentIds: [], allAgents: true }, `fixture-${name}`);
-    const account = await save("Grok history");
-    const other = await save("Other Grok history");
+  it("never restores retained Grok transcripts into same-user runtime homes", async () => {
+    const account = await service.save(companyId, "alice", {
+      provider: "xai", method: "api_key", ownership: "personal",
+      name: "Grok history isolation", agentIds: [], allAgents: true,
+    }, "fixture-grok-key");
     const taskKey = `grok-history-${randomUUID()}`;
-    await db.insert(agentTaskSessions).values({ companyId, agentId, adapterType: "grok_local", taskKey, sessionParamsJson: {} });
-    const runInput = { ...input, taskKey, adapterType: "grok_local", responsibleUserId: "alice", config: {}, binding: { provider: "xai", method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId } as const };
+    const runInput = { ...input, taskKey, adapterType: "grok_local", responsibleUserId: "alice", config: {},
+      binding: { provider: "xai", method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId } as const };
     const first = await prepareManagedAiRuntime(db, runInput);
-    const sessions = path.join(String(first.config.env.GROK_HOME), "sessions");
-    expect((await stat(sessions)).isDirectory()).toBe(true);
-    await writeFile(path.join(sessions, "history.json"), '{"fixture":"history"}', { mode: 0o600 });
-    // Never retain a symlink to another agent's transcript or a credential file.
-    const outside = path.join(home, "sibling-transcript.json");
-    await writeFile(outside, "sibling-private-history", { mode: 0o600 });
-    await symlink(outside, path.join(sessions, "sibling-link.json"));
-    await writeFile(path.join(String(first.config.env.GROK_HOME), "auth.json"), "disposable-auth", { mode: 0o600 });
-    const checkpoint = await first.checkpointSessionHistory!();
-    await db.update(agentTaskSessions).set({ sessionParamsJson: { sessionId: "history", ...checkpoint } }).where(eq(agentTaskSessions.taskKey, taskKey));
+    const scope = createHash("sha256").update(JSON.stringify([
+      companyId, agentId, taskKey, first.sessionIdentity,
+    ])).digest("hex");
     await first.cleanup();
-    await expect(access(first.home!)).rejects.toThrow();
-    await expect(access(sessions)).rejects.toThrow();
-    const [stored] = await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.taskKey, taskKey));
-    expect(JSON.stringify(stored.sessionParamsJson)).not.toContain("fixture");
-    expect(JSON.stringify(stored.sessionParamsJson)).not.toContain("sibling-private-history");
-    expect(stored.sessionParamsJson?.paperclipGrokHistory).toMatchObject({ material: { scheme: "local_encrypted_v1" } });
+    // Seed a valid archive from the earlier implementation. Runtime preparation
+    // must not decrypt it onto the host, even for its authorized agent/task.
+    const retained = await localEncryptedProvider.createVersion({ value: JSON.stringify({
+      scope, entries: [{ name: "history.json", bytes: Buffer.from("previous-task-private-transcript").toString("base64") }],
+    }) });
+    await db.insert(agentTaskSessions).values({ companyId, agentId, adapterType: "grok_local", taskKey,
+      sessionParamsJson: { sessionId: "history", paperclipGrokHistory: { scope, material: retained.material } } });
     const resumed = await prepareManagedAiRuntime(db, runInput);
-    const otherAgent = await prepareManagedAiRuntime(db, { ...runInput, agentId: randomUUID() });
-    const otherAccount = await prepareManagedAiRuntime(db, { ...runInput, binding: { ...runInput.binding, connectionId: other.connectionId, grantId: other.grantId } });
-    const otherTask = await prepareManagedAiRuntime(db, { ...runInput, taskKey: "another-task" });
+    const peer = await prepareManagedAiRuntime(db, { ...runInput, agentId: randomUUID() });
     try {
       expect(resumed.home).not.toBe(first.home);
-      const restored = path.join(String(resumed.config.env.GROK_HOME), "sessions");
-      expect(await readdir(restored)).toEqual(["history.json"]);
-      expect(await readFile(path.join(restored, "history.json"), "utf8")).toBe('{"fixture":"history"}');
-      expect((await stat(restored)).mode & 0o777).toBe(0o700);
-      for (const runtime of [otherAgent, otherAccount, otherTask]) {
-        expect(await readdir(path.join(String(runtime.config.env.GROK_HOME), "sessions"))).toEqual([]);
-      }
-      await expect(access(path.join(String(resumed.config.env.GROK_HOME), "auth.json"))).rejects.toThrow();
-    } finally { await Promise.all([resumed.cleanup(), otherAgent.cleanup(), otherAccount.cleanup(), otherTask.cleanup()]); }
-  });
-  it.each(["bytes", "entries"])("keeps the Grok provider checkpoint when history exceeds its %s limit", async (limit) => {
-    const account = await service.save(companyId, "alice", { provider: "xai", method: "api_key", ownership: "personal", name: `History limit ${limit}`, agentIds: [], allAgents: true }, "fixture-key");
-    const taskKey = `grok-limit-${randomUUID()}`;
-    await db.insert(agentTaskSessions).values({ companyId, agentId, adapterType: "grok_local", taskKey, sessionParamsJson: {} });
-    const runInput = { ...input, taskKey, adapterType: "grok_local", responsibleUserId: "alice", config: {}, binding: { provider: "xai", method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId } as const };
-    const runtime = await prepareManagedAiRuntime(db, runInput);
-    try {
-      const sessions = path.join(String(runtime.config.env.GROK_HOME), "sessions");
-      if (limit === "bytes") {
-        const file = path.join(sessions, "oversized.json");
-        await writeFile(file, "");
-        await truncate(file, 17 * 1024 * 1024);
-      } else {
-        for (let start = 0; start < 5001; start += 100) {
-          await Promise.all(Array.from({ length: Math.min(100, 5001 - start) }, (_, i) => writeFile(path.join(sessions, `${start + i}.json`), "")));
-        }
-      }
-      const checkpoint = await runtime.checkpointSessionHistory!();
-      expect(checkpoint).toEqual({ paperclipGrokHistory: null, paperclipGrokHistoryStatus: "fresh_session_required" });
-      // This is the same merge persisted by heartbeat before releasing ownership.
-      await db.update(agentTaskSessions).set({ sessionParamsJson: { sessionId: "provider-session", cwd: "/workspace", ...checkpoint } }).where(eq(agentTaskSessions.taskKey, taskKey));
-    } finally { await runtime.cleanup(); }
-    const [stored] = await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.taskKey, taskKey));
-    expect(stored.sessionParamsJson).toMatchObject({ sessionId: "provider-session", cwd: "/workspace", paperclipGrokHistory: null });
-    const resumed = await prepareManagedAiRuntime(db, runInput);
-    try { expect(await readdir(path.join(String(resumed.config.env.GROK_HOME), "sessions"))).toEqual([]); }
-    finally { await resumed.cleanup(); }
+      expect(peer.home).not.toBe(resumed.home);
+      const transcript = path.join(String(resumed.config.env.GROK_HOME), "sessions", "history.json");
+      // A separate same-UID process can bypass 0700. It must find no restored
+      // transcript because none was materialized, not because of permissions.
+      const crossAgentRead = spawnSync(process.execPath, ["-e", `
+        const fs = require("node:fs");
+        try { process.stdout.write(fs.readFileSync(process.argv[1], "utf8")); }
+        catch (error) { process.stdout.write(error.code); }
+      `, transcript], { encoding: "utf8" });
+      expect(crossAgentRead.status).toBe(0);
+      expect(crossAgentRead.stdout).toBe("ENOENT");
+      await expect(access(transcript)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await Promise.all([resumed.cleanup(), peer.cleanup()]); }
   });
   it("authenticates local Gemini probes and runs with the saved key in an isolated home", async () => {
     const root = await mkdtemp(path.join(home, "gemini-auth-"));

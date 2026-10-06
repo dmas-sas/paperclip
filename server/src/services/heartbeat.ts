@@ -21774,7 +21774,7 @@ export function heartbeatService(
       readFailureReportSecrets = () => collectRunFailureSecretValues(resolvedConfig.env, secretKeys);
       if (aiBinding) {
         try {
-          managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig, taskKey });
+          managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });
         } catch (error) {
           // Only fresh executions can receive a pre-provider wait receipt. A
           // persisted native input may already have provider effects to recover.
@@ -26074,32 +26074,21 @@ export function heartbeatService(
                 expectedRunId: finalizedRun.id,
               });
             } else {
-              const historyCheckpoint = await managedAiRuntime?.checkpointSessionHistory?.();
               await upsertTaskSession({
                 companyId: agent.companyId,
                 agentId: agent.id,
                 adapterType: agent.adapterType,
                 taskKey,
-                sessionParamsJson: {
-                  ...attachPaperclipSessionMetadataToSessionParams(
+                sessionParamsJson:
+                  attachPaperclipSessionMetadataToSessionParams(
                     nextSessionState.params,
                     configuredModel,
                     sessionConfigMetadata,
                   ),
-                  ...historyCheckpoint,
-                },
                 sessionDisplayId: nextSessionState.displayId,
                 lastRunId: finalizedRun.id,
                 lastError: runErrorMessage,
               });
-              if (historyCheckpoint?.paperclipGrokHistoryStatus === "fresh_session_required") {
-                await appendRunEvent(finalizedRun, {
-                  eventType: "session_history_limit",
-                  stream: "system",
-                  level: "warn",
-                  message: "Grok history exceeded its retention limit. The next run will start a fresh session with the task handoff.",
-                }).catch((error) => logger.warn({ error, runId: finalizedRun.id }, "Could not record Grok history limit"));
-              }
             }
           }
         }

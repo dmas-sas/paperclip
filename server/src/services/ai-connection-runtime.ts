@@ -17,7 +17,6 @@ import { decideCodexAuthMerge } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
-import { prepareGrokSessionHistory } from "./grok-session-history.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -219,7 +218,6 @@ export async function prepareManagedAiRuntime(
     allowUninstalledShared?: boolean;
     allowLegacyValidation?: boolean;
     config: Record<string, unknown>;
-    taskKey?: string | null;
   },
 ) {
   const configuredEnv =
@@ -342,9 +340,6 @@ export async function prepareManagedAiRuntime(
       .slice(0, 16);
     const identity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${generation}`;
     const sessionIdentity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${noAuth ? "no-auth" : `${credentialRef!.secretId}:${freshness!.epoch}`}`;
-    const retainGrokHistory = input.adapterType === "grok_local"
-      ? await prepareGrokSessionHistory(db, { ...input, sessionIdentity, providerHome })
-      : undefined;
     return {
       sessionIdentity,
       config: {
@@ -359,7 +354,6 @@ export async function prepareManagedAiRuntime(
       accountOwnerUserId: selection.grant.subjectUserId,
       identity,
       home,
-      checkpointSessionHistory: retainGrokHistory,
       cleanup: async () => {
         try {
           if (subscriptionFile) {
