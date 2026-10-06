@@ -1985,7 +1985,7 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
     HTTPS_PROXY: environment.https_proxy ?? environment.HTTPS_PROXY ?? environment.http_proxy ?? environment.HTTP_PROXY ?? environment.all_proxy ?? environment.ALL_PROXY,
     NO_PROXY: environment.no_proxy ?? environment.NO_PROXY,
   };
-  const ca = getCACertificates("default");
+  const ca = [...getCACertificates("default")];
   if (environment.SSL_CERT_FILE) ca.push(await readFile(environment.SSL_CERT_FILE, "utf8"));
   if (environment.SSL_CERT_DIR) {
     for (const entry of await readdir(environment.SSL_CERT_DIR, { withFileTypes: true })) {
