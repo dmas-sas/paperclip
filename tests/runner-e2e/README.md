@@ -6,6 +6,10 @@ See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
 `provider-connections` suite, local/staging target ownership, dedicated browser
 profiles, credential handoffs, private evidence, and cleanup contract.
 
+The [public MCP suite](PUBLIC-MCP.md) adds explicit paid assistant/plugin journeys
+with authenticated browser consent, real MCP tool use and independently graded
+team execution. Select `--suite public-mcp`; it is excluded from `--all`.
+
 For family selection, ownership, provenance, history, and failure taxonomy,
 see the [Paperclip evaluation guide](../../doc/evals.md). This README is the
 authoritative runbook for Product E2E runner cells; the separate Runner Evals

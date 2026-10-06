@@ -14,6 +14,16 @@ The optional installed-Gemini filesystem smoke uses synthetic credentials and
 loopback model responses, makes no real provider calls, and removes its
 disposable home/workspace.
 
+The explicit [public MCP suite](PUBLIC-MCP.md) also creates a disposable browser
+account and OAuth grant. Signup and token exchange use Node fetch, credentials
+stay outside model context, and dynamic cookie/code/token values join the
+attempt's redaction set. Tracing, video and automatic screenshots are disabled
+for that suite; only reviewed fixture task routes may produce public screenshots.
+External API evidence retains visible answers and tool outcomes, never raw model
+reasoning. Empty provider configuration directories prevent operator plugins and
+MCP credentials from being inherited. All grants are revoked during cleanup and
+the launcher removes the isolated database and provider homes.
+
 This suite can spend provider money, expose selected local and workflow API credentials to isolated
 test processes, publish a container, retain private visual evidence, and write
 public structured evidence. Treat changes to the workflow, harness, fixture

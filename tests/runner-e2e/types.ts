@@ -19,6 +19,7 @@ export type RunnerTaskFlow =
   | "provider_connection"
   | "plan_task_guidance"
   | "blocker_guidance"
+  | "public_mcp"
   | "everyday_workflow"
   | "context_integrity"
 
@@ -242,6 +243,7 @@ export interface RunnerE2ERuntimeUsage {
 }
 
 export interface RunnerE2EBillingSummary {
+  assistant?: import("./public-mcp-model.js").AssistantUsage;
   llm: {
     runCount: number;
     runsWithTokenUsage: number;
@@ -329,6 +331,8 @@ export interface RunnerE2EResult {
   providerConnection?: import("./connection-evidence.js").ConnectionEvidence;
   completionQuality?: import("./completion-quality.js").CompletionQualityRecord[];
   firstTaskQuality?: import("./first-task-quality.js").FirstTaskQuality;
+  /** External assistant API calls, separate from the team's heartbeat executions. */
+  publicMcp?: import("./public-mcp-model.js").AssistantUsage;
   cleanup: "not_started" | "passed" | "failed";
 }
 
@@ -358,6 +362,7 @@ export interface RunnerE2EJudgeBillingSummary {
 }
 
 export interface RunnerE2EAggregateBillingSummary {
+  assistant?: { requests: number; inputTokens: number; outputTokens: number; cachedInputTokens: number; estimatedCostUsd: number };
   judge?: RunnerE2EJudgeBillingSummary;
   testCount: number;
   agentRunDurationMs: number;
