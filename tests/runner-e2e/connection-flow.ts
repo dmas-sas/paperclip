@@ -235,10 +235,12 @@ export async function runConnectionFlow(input: ConnectionFlowInput) {
   await expect(page.getByRole("heading", { name: "Configure your agent", exact: true })).toBeVisible({ timeout: 120_000 });
   const environmentSelect = page.getByRole("combobox", { name: "Environment", exact: true });
   const selectedEnv = await environmentSelect.inputValue();
-  if (selectedEnv !== environment.id && await environmentSelect.isEnabled()) {
+  if (selectedEnv !== environment.id) {
+    if (!(await environmentSelect.isEnabled())) throw new ConnectionBlock("blocked_target", "requested_execution_environment_unavailable");
     await environmentSelect.selectOption(environment.id);
     if (["claude", "codex", "grok"].includes(harness.id)) await selectSavedConnection(page, connection, harness, mode);
   }
+  if (await environmentSelect.inputValue() !== environment.id) throw new ConnectionBlock("blocked_target", "requested_execution_environment_unavailable");
   await input.checkpoint("select_model");
   await selectModel(page, settings.model);
   await input.checkpoint("setup_probe");
@@ -259,6 +261,13 @@ export async function runConnectionFlow(input: ConnectionFlowInput) {
     if (!agent) await connectionDelay(500);
   }
   if (!agent) throw new ConnectionFailure("agent_creation_failed");
+  if (agent.defaultEnvironmentId !== environment.id) {
+    // A null override is valid only when the instance default is this exact environment.
+    const instance = await api.get<Row>("/api/instance/settings");
+    const effective = agent.defaultEnvironmentId ?? instance.defaultEnvironmentId
+      ?? (environment.driver === "local" ? environment.id : null);
+    if (effective !== environment.id) throw new ConnectionFailure("saved_agent_environment_mismatch");
+  }
   evidence.agentId = agent.id;
   evidence.checkpoints.agent_created = true;
   const expectedModel = connection.routing
@@ -308,7 +317,7 @@ export async function runConnectionFlow(input: ConnectionFlowInput) {
       if (runs.size > config.maxRuns) throw new ConnectionFailure("provider_run_limit_exceeded");
       const next = [...runs.values()].filter(run => !after.has(run.id));
       if (next.some(run => ["failed", "cancelled", "interrupted", "timed_out"].includes(run.status))) throw new ConnectionFailure("agent_run_failed");
-      const complete = next.find(run => verifyConnectionRun(run, { agentId: agent!.id, connectionId: connection.id, method: connection.method, runtimeMode: execution.profile.generation }));
+      const complete = next.find(run => verifyConnectionRun(run, { agentId: agent!.id, connectionId: connection.id, method: connection.method, runtimeMode: execution.profile.generation, environmentId: environment.id }));
       if (complete) {
         const status = (await api.get(`/api/issues/${issue!.id}`)).status;
         if (status === "done") {
@@ -317,13 +326,13 @@ export async function runConnectionFlow(input: ConnectionFlowInput) {
           // artifact, preserving the configured run and time limits.
           const attachments = await api.get<Row[]>(`/api/issues/${issue!.id}/attachments`);
           const delivered = completedConnectionArtifactRun(next, attachments, filename,
-            { agentId: agent!.id, connectionId: connection.id, method: connection.method, runtimeMode: execution.profile.generation });
+            { agentId: agent!.id, connectionId: connection.id, method: connection.method, runtimeMode: execution.profile.generation, environmentId: environment.id });
           if (delivered) return delivered;
           if (next.every(run => ["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(run.status))) throw new ConnectionFailure("run_attributed_artifact_missing");
         }
         if (status === "blocked") throw new ConnectionFailure("task_blocked_after_provider_run");
       }
-      if (next.some(run => run.status === "succeeded" && !verifyConnectionRun(run, { agentId: agent!.id, connectionId: connection.id, method: connection.method, runtimeMode: execution.profile.generation }))) throw new ConnectionFailure("run_attribution_mismatch");
+      if (next.some(run => run.status === "succeeded" && !verifyConnectionRun(run, { agentId: agent!.id, connectionId: connection.id, method: connection.method, runtimeMode: execution.profile.generation, environmentId: environment.id }))) throw new ConnectionFailure("run_attribution_mismatch");
       await connectionDelay(1500);
     }
     throw new ConnectionFailure("agent_run_or_attribution_timeout");

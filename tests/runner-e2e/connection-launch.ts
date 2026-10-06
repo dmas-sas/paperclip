@@ -103,6 +103,7 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
   const assertActive = () => { if (stopped) throw new ConnectionBlock("blocked_target", stopped); };
   process.once("SIGINT", interrupt);
   process.once("SIGTERM", interrupt);
+  process.once("SIGHUP", interrupt);
   const deadlineTimer = setTimeout(() => { stopped = "cell_deadline_reached"; stopBrowserActions(); }, execution.task.attemptTimeoutMs?.[execution.environment.id] ?? 30 * 60_000);
   try {
     const identity = await verifyConnectionTarget(origin, config);
@@ -251,6 +252,7 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
     await rm(privateDir, { recursive: true, force: true });
     process.removeListener("SIGINT", interrupt);
     process.removeListener("SIGTERM", interrupt);
+    process.removeListener("SIGHUP", interrupt);
   }
   return result;
 }

@@ -108,10 +108,11 @@ export function verifyConnectionArtifact(bytes: Buffer, expected: Record<string,
 }
 
 /** Only durable run attribution is accepted; assistant text cannot provide it. */
-export function verifyConnectionRun(run: Record<string, any>, expected: { agentId: string; connectionId: string; method: string; runtimeMode: string }) {
+export function verifyConnectionRun(run: Record<string, any>, expected: { agentId: string; connectionId: string; method: string; runtimeMode: string; environmentId: string }) {
   const connection = run.contextSnapshot?.aiConnection;
   return run.status === "succeeded" && run.agentId === expected.agentId && run.runtimeMode === expected.runtimeMode &&
-    connection?.connectionId === expected.connectionId && connection?.method === expected.method;
+    connection?.connectionId === expected.connectionId && connection?.method === expected.method &&
+    run.contextSnapshot?.paperclipEnvironment?.id === expected.environmentId;
 }
 
 /** Wait for scheduled repairs to settle, then select the run that actually delivered the file. */

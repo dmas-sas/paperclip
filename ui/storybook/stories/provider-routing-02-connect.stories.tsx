@@ -105,7 +105,7 @@ export const CustomEndpointWalkthrough: Story = {
       "https://models.example.com/v1",
     );
     await userEvent.type(canvas.getByLabelText("API key"), "storybook-example");
-    await userEvent.click(canvas.getByRole("button", { name: /^Connect / }));
+    await userEvent.click(canvas.getByRole("button", { name: "Connect", exact: true }));
     await expect(
       canvas.getByRole("heading", { name: "Connection ready" }),
     ).toBeVisible();

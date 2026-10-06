@@ -113,8 +113,8 @@ describe("independent qualification", () => {
     expect(connectionRunDiagnostic({ id: "unattributed-503", status: "failed", error: 'HTTP 503' }).signals).toEqual([]);
   });
   it("waits for disposition repair and requires the successful artifact-producing run", () => {
-    const expected = { agentId: "a", connectionId: "c", method: "api_key", runtimeMode: "legacy" };
-    const first = { id: "first", agentId: "a", status: "succeeded", runtimeMode: "legacy", contextSnapshot: { aiConnection: { connectionId: "c", method: "api_key" } } };
+    const expected = { agentId: "a", connectionId: "c", method: "api_key", runtimeMode: "legacy", environmentId: "env" };
+    const first = { id: "first", agentId: "a", status: "succeeded", runtimeMode: "legacy", contextSnapshot: { paperclipEnvironment: { id: "env" }, aiConnection: { connectionId: "c", method: "api_key" } } };
     const repair = { ...first, id: "repair" };
     const file = { originalFilename: "proof.json", createdByAgentId: "a", originatingRunId: "repair" };
     expect(completedConnectionArtifactRun([first, { ...repair, status: "running" }], [file], "proof.json", expected)).toBeUndefined();
@@ -138,11 +138,13 @@ describe("independent qualification", () => {
     expect(verifyConnectionArtifact(Buffer.from(JSON.stringify(proof.expected)), proof.expected)).toBe(true);
     expect(verifyConnectionArtifact(Buffer.from("Provider routing works"), proof.expected)).toBe(false);
     expect(verifyConnectionArtifact(Buffer.from(JSON.stringify({ ...proof.expected, total: proof.expected.total + 1 })), proof.expected)).toBe(false);
-    const expected = { agentId: "a", connectionId: "c", method: "subscription", runtimeMode: "native", model: "m" };
-    const run = { agentId: "a", status: "succeeded", runtimeMode: "native", contextSnapshot: { aiConnection: { connectionId: "c", method: "subscription" } } };
+    const expected = { agentId: "a", connectionId: "c", method: "subscription", runtimeMode: "native", environmentId: "env", model: "m" };
+    const run = { agentId: "a", status: "succeeded", runtimeMode: "native", contextSnapshot: { paperclipEnvironment: { id: "env" }, aiConnection: { connectionId: "c", method: "subscription" } } };
     expect(verifyConnectionRun(run, expected)).toBe(true);
     expect(verifyConnectionRun(run, { ...expected, connectionId: "ambient" })).toBe(false);
     expect(verifyConnectionRun(run, { ...expected, method: "api_key" })).toBe(false);
+    expect(verifyConnectionRun(run, { ...expected, environmentId: "another-env" })).toBe(false);
+    expect(verifyConnectionRun({ ...run, contextSnapshot: { aiConnection: run.contextSnapshot.aiConnection } }, expected)).toBe(false);
   });
   it("requires every checkpoint and never passes absent evidence or a human deadline", () => {
     expect(connectionEvidencePasses(passingEvidence())).toBe(true);
