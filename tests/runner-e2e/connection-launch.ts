@@ -77,7 +77,7 @@ async function safeWrite(file: string, value: unknown, secrets: readonly string[
   await writeFile(file, text, { mode: 0o600 });
 }
 
-async function connectionAttempt(execution: MatrixExecution, config: ConnectionConfig, origin: string, summaryDir: string, repositoryRoot: string): Promise<RunnerE2EResult> {
+async function connectionAttempt(execution: MatrixExecution, config: ConnectionConfig, origin: string, summaryDir: string, repositoryRoot: string, signal: AbortSignal): Promise<RunnerE2EResult> {
   const startedAt = new Date().toISOString();
   const nonce = randomBytes(6).toString("hex");
   const privateDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-connection-proof-"));
@@ -101,11 +101,11 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
   const stopBrowserActions = () => { for (const page of browser?.context.pages() ?? []) void page.close().catch(() => {}); };
   const interrupt = () => { stopped = "test_interrupted"; stopBrowserActions(); };
   const assertActive = () => { if (stopped) throw new ConnectionBlock("blocked_target", stopped); };
-  process.once("SIGINT", interrupt);
-  process.once("SIGTERM", interrupt);
-  process.once("SIGHUP", interrupt);
+  signal.addEventListener("abort", interrupt, { once: true });
+  if (signal.aborted) interrupt();
   const deadlineTimer = setTimeout(() => { stopped = "cell_deadline_reached"; stopBrowserActions(); }, execution.task.attemptTimeoutMs?.[execution.environment.id] ?? 30 * 60_000);
   try {
+    assertActive();
     const identity = await verifyConnectionTarget(origin, config);
     Object.assign(evidence.target, identity);
     evidence.checkpoints.target = true;
@@ -117,7 +117,9 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
     // Resolve only the selected credential, and only after validating the target.
     const secret = await resolveConnectionSecret(config, settings.credentialEnv);
     if (secret) secrets.push(secret);
+    assertActive();
     browser = await openConnectionBrowser(config, repositoryRoot, origin);
+    assertActive();
     const page = browser.context.pages()[0] ?? await browser.context.newPage();
     const api = new ConnectionApi(browser.context.request, origin);
     diagnosticApi = api;
@@ -250,36 +252,60 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
     await safeWrite(path.join(evidenceDir, "evidence-manifest.json"), manifest, secrets);
     await safeWrite(path.join(summaryDir, "progress.json"), { executionId: execution.id, ...evidence }, secrets);
     await rm(privateDir, { recursive: true, force: true });
-    process.removeListener("SIGINT", interrupt);
-    process.removeListener("SIGTERM", interrupt);
-    process.removeListener("SIGHUP", interrupt);
+    signal.removeEventListener("abort", interrupt);
   }
   return result;
 }
 
 export async function runConnectionCampaign(input: { executions: readonly MatrixExecution[]; catalog: readonly MatrixExecution[]; configFile?: string; repositoryRoot: string }) {
-  if (input.executions.some(e => e.task.flow !== "provider_connection")) throw new ConnectionFailure("Select provider-connections separately from other suites.");
-  const config = await loadConnectionConfig(input.configFile);
-  const campaignId = `connections-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(3).toString("hex")}`;
-  const summaryDir = path.join(input.repositoryRoot, "tests/runner-e2e/results", campaignId);
-  await mkdir(summaryDir, { recursive: true, mode: 0o700 });
-  const results: RunnerE2EResult[] = [];
-  const target = await startConnectionTarget(config, input.executions, input.repositoryRoot);
-  try {
-    console.log(`[provider-connections] ${input.executions.length} selected cells; target ${target.origin}; one browser/account at a time; max ${config.maxRuns} task runs and ${config.budgetCents} cents per fixture. UI probe spend may be unreported.`);
-    for (const execution of input.executions) {
-      console.log(`[provider-connections] Starting ${execution.id}`);
-      const result = await connectionAttempt(execution, config, target.origin, summaryDir, input.repositoryRoot);
-      results.push(result);
-      console.log(`[provider-connections] ${result.providerConnection!.outcome}: ${execution.id}${result.error ? ` (${result.error})` : ""}`);
-      // Every completed/blocked cell is durable before the next login begins.
+  return withConnectionCampaignCancellation(async (signal) => {
+    if (input.executions.some(e => e.task.flow !== "provider_connection")) throw new ConnectionFailure("Select provider-connections separately from other suites.");
+    const config = await loadConnectionConfig(input.configFile);
+    const campaignId = `connections-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(3).toString("hex")}`;
+    const summaryDir = path.join(input.repositoryRoot, "tests/runner-e2e/results", campaignId);
+    await mkdir(summaryDir, { recursive: true, mode: 0o700 });
+    const results: RunnerE2EResult[] = [];
+    let target: Awaited<ReturnType<typeof startConnectionTarget>> | undefined;
+    try {
+      assertConnectionCampaignActive(signal);
+      target = await startConnectionTarget(config, input.executions, input.repositoryRoot, signal);
+      assertConnectionCampaignActive(signal);
+      console.log(`[provider-connections] ${input.executions.length} selected cells; target ${target.origin}; one browser/account at a time; max ${config.maxRuns} task runs and ${config.budgetCents} cents per fixture. UI probe spend may be unreported.`);
+      for (const execution of input.executions) {
+        assertConnectionCampaignActive(signal);
+        console.log(`[provider-connections] Starting ${execution.id}`);
+        const result = await connectionAttempt(execution, config, target.origin, summaryDir, input.repositoryRoot, signal);
+        results.push(result);
+        console.log(`[provider-connections] ${result.providerConnection!.outcome}: ${execution.id}${result.error ? ` (${result.error})` : ""}`);
+        // Every completed/blocked cell is durable before the next login begins.
+        await writeConnectionCampaignReport(input, campaignId, summaryDir, results);
+        if (signal.aborted || result.error === "test_interrupted" || result.providerConnection!.outcome === "awaiting_user") break;
+      }
+    } catch (error) {
+      if (!signal.aborted) throw error;
+      // Preserve completed receipts even if interrupted during server startup or
+      // report generation. Cancellation never admits another cell.
       await writeConnectionCampaignReport(input, campaignId, summaryDir, results);
-      if (result.error === "test_interrupted" || result.providerConnection!.outcome === "awaiting_user") break;
-    }
-  } finally { await target.stop(); }
-  console.log(`[provider-connections] Report: ${path.join(summaryDir, "dashboard.html")}`);
-  if (results.some(result => result.status !== "passed" || result.cleanup !== "passed")) process.exitCode = 1;
-  return summaryDir;
+    } finally { await target?.stop(); }
+    console.log(`[provider-connections] Report: ${path.join(summaryDir, "dashboard.html")}`);
+    if (signal.aborted || results.some(result => result.status !== "passed" || result.cleanup !== "passed")) process.exitCode = 1;
+    return summaryDir;
+  });
+}
+
+function assertConnectionCampaignActive(signal: AbortSignal) {
+  if (signal.aborted) throw new ConnectionBlock("blocked_target", "test_interrupted");
+}
+
+/** One cancellation state covers configuration, startup, every cell, reports,
+ * and owned-target teardown. Repeated signals cannot reset it. */
+export async function withConnectionCampaignCancellation<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const interrupt = () => controller.abort();
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+  for (const signal of signals) process.on(signal, interrupt);
+  try { return await run(controller.signal); }
+  finally { for (const signal of signals) process.removeListener(signal, interrupt); }
 }
 
 export async function writeConnectionCampaignReport(input: { executions: readonly MatrixExecution[]; catalog: readonly MatrixExecution[] }, campaignId: string, summaryDir: string, results: RunnerE2EResult[]) {

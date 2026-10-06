@@ -10,13 +10,62 @@ import { parseConnectionConfig, targetOrigin, selectedSecret, resolveConnectionS
 import { connectionCheckpoints, connectionEvidencePasses, connectionRunDiagnostic, createConnectionProof, verifyConnectionArtifact, verifyConnectionRun, completedConnectionArtifactRun, connectionProbeChecks, type ConnectionEvidence } from "./connection-evidence.js";
 import { validateRetainedRunnerResult } from "./result-validation.js";
 import { verifyConnectionTarget } from "./connection-target.js";
-import { safeConnectionFailure } from "./connection-launch.js";
+import { runConnectionCampaign, safeConnectionFailure, withConnectionCampaignCancellation } from "./connection-launch.js";
+import * as connectionConfig from "./connection-config.js";
+import * as connectionTarget from "./connection-target.js";
+import * as reportAssets from "./report-assets.js";
 import { buildRunnerCampaign } from "./history.js";
 import { renderCaseOutcome } from "./case-outcome.js";
 import type { RunnerE2EResult } from "./types.js";
 
 const cells = runnerMatrix.filter(e => e.suite.id === "provider-connections");
 const cell = (method: string) => cells.find(e => e.id === `provider-connections.connection-codex-native.local.agent-${method}`)!;
+
+describe("campaign interruption", () => {
+  it.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)("keeps %s cancellation active until teardown finishes", async (signal) => {
+    const before = process.listenerCount(signal);
+    await withConnectionCampaignCancellation(async (state) => {
+      expect(process.listenerCount(signal)).toBe(before + 1);
+      process.emit(signal);
+      expect(state.aborted).toBe(true);
+      await Promise.resolve();
+      process.emit(signal);
+      expect(state.aborted).toBe(true);
+    });
+    expect(process.listenerCount(signal)).toBe(before);
+  });
+  it.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)("stops owned targets and admits no next cell after %s during startup or reporting", async (signal) => {
+    const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+    const exitCode = process.exitCode;
+    for (const phase of ["startup", "report"] as const) {
+      const stop = vi.fn(async () => {});
+      const before = process.listenerCount(signal);
+      const config = parseConnectionConfig({});
+      const load = vi.spyOn(connectionConfig, "loadConnectionConfig").mockResolvedValue(config);
+      const credential = vi.spyOn(connectionConfig, "resolveConnectionSecret").mockRejectedValue(new connectionConfig.ConnectionBlock("missing_credential", "synthetic_missing_credential"));
+      const target = vi.spyOn(connectionTarget, "startConnectionTarget").mockImplementation(async (_config, _executions, _root, state) => {
+        expect(state?.aborted).toBe(false);
+        if (phase === "startup") process.emit(signal);
+        return { origin: "http://127.0.0.1:1", stop };
+      });
+      const verify = vi.spyOn(connectionTarget, "verifyConnectionTarget").mockResolvedValue({ commit: "a".repeat(40), deploymentMode: "local_trusted" });
+      const report = vi.spyOn(reportAssets, "stageDashboardBrandAssets").mockImplementation(async () => { if (phase === "report") process.emit(signal); });
+      let summary: string | undefined;
+      try {
+        summary = await runConnectionCampaign({ executions: [cell("api-key"), cell("subscription")], catalog: cells, repositoryRoot });
+        expect(credential).toHaveBeenCalledTimes(phase === "startup" ? 0 : 1);
+        expect(verify).toHaveBeenCalledTimes(phase === "startup" ? 0 : 1);
+        expect(stop).toHaveBeenCalledTimes(1);
+        expect(process.exitCode).toBe(1);
+        expect(process.listenerCount(signal)).toBe(before);
+      } finally {
+        load.mockRestore(); credential.mockRestore(); target.mockRestore(); verify.mockRestore(); report.mockRestore();
+        process.exitCode = exitCode;
+        if (summary) await rm(summary, { recursive: true, force: true });
+      }
+    }
+  });
+});
 
 describe("live connection coverage", () => {
   it("inventories every built-in adapter and keeps remote exclusions explicit", () => {

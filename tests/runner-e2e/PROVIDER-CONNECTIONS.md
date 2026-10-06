@@ -275,6 +275,10 @@ An interrupted subscription attempt exposed another cleanup bug: Playwright's
 default signal handler closed the browser before the harness could cancel the
 login using its authenticated API client. The harness now owns browser shutdown,
 and a real-browser smoke verified cleanup under SIGINT, SIGTERM, and SIGHUP.
+One cancellation state now covers the entire campaign, including target startup,
+report generation, and teardown. Credential-free regressions verify that all three
+signals stop further cells during startup and reporting and still stop the owned
+target. Signal handlers remain installed until teardown finishes.
 An expired human handoff also stops the campaign instead of opening the next
 subscription window. The affected attempt remains failed in the evidence; its
 login was cancelled and its disposable company archived through the public API.

@@ -47,33 +47,42 @@ async function stopOwnedServer(child: ChildProcess) {
   kill("SIGKILL");
 }
 
-export async function startConnectionTarget(config: ConnectionConfig, executions: readonly MatrixExecution[], repositoryRoot: string) {
+export async function startConnectionTarget(config: ConnectionConfig, executions: readonly MatrixExecution[], repositoryRoot: string, signal?: AbortSignal) {
+  const assertActive = () => { if (signal?.aborted) throw new ConnectionBlock("blocked_target", "test_interrupted"); };
+  assertActive();
   if (config.target.mode === "attach") return { origin: targetOrigin(config.target.baseURL), stop: async () => {} };
   const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-connection-e2e-"));
-  const home = path.join(root, "paperclip-home");
-  const instance = `connection-${randomBytes(6).toString("hex")}`;
-  const port = await reserveRunnerE2EServerPort();
-  await mkdir(home, { mode: 0o700 });
-  // Only bootstrap essentials are inherited. Selected provider keys enter via UI.
-  const env: NodeJS.ProcessEnv = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "NODE_EXTRA_CA_CERTS"].flatMap(key => process.env[key] ? [[key, process.env[key]!]] : []));
-  Object.assign(env, {
-    PAPERCLIP_HOME: home, PAPERCLIP_INSTANCE_ID: instance, PAPERCLIP_CONFIG: path.join(home, "instances", instance, "config.json"),
-    PAPERCLIP_RUNNER_E2E_TEMP_ROOT: root, PAPERCLIP_RUNNER_E2E_PORT: String(port), PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(root, "server.log"),
-    PAPERCLIP_RUNNER_BINARY: resolvePaperclipRunnerBinaryForHarness(executions, repositoryRoot),
-    PAPERCLIP_VITE_CACHE_DIR: path.join(root, "vite-cache"), PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false",
-    PAPERCLIP_AGENT_JWT_SECRET: randomBytes(48).toString("hex"), PAPERCLIP_DECISION_SIGNING_SECRET: randomBytes(48).toString("hex"),
-    PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: randomBytes(48).toString("hex"), BETTER_AUTH_SECRET: randomBytes(48).toString("hex"),
-  });
-  const child = spawn(process.execPath, runnerE2ETypeScriptProcessArgs(repositoryRoot, path.join(repositoryRoot, "tests/runner-e2e/server.ts")), { cwd: repositoryRoot, env, detached: process.platform !== "win32", stdio: "ignore" });
-  let failed = false;
-  child.once("error", () => { failed = true; });
-  const stop = async () => { await stopOwnedServer(child); await rm(root, { recursive: true, force: true }); };
-  const origin = `http://127.0.0.1:${port}`;
+  let child: ChildProcess | undefined;
+  const stop = async () => { if (child) await stopOwnedServer(child); await rm(root, { recursive: true, force: true }); };
   try {
+    assertActive();
+    const home = path.join(root, "paperclip-home");
+    const instance = `connection-${randomBytes(6).toString("hex")}`;
+    const port = await reserveRunnerE2EServerPort();
+    await mkdir(home, { mode: 0o700 });
+    // Only bootstrap essentials are inherited. Selected provider keys enter via UI.
+    const env: NodeJS.ProcessEnv = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "NODE_EXTRA_CA_CERTS"].flatMap(key => process.env[key] ? [[key, process.env[key]!]] : []));
+    Object.assign(env, {
+      PAPERCLIP_HOME: home, PAPERCLIP_INSTANCE_ID: instance, PAPERCLIP_CONFIG: path.join(home, "instances", instance, "config.json"),
+      PAPERCLIP_RUNNER_E2E_TEMP_ROOT: root, PAPERCLIP_RUNNER_E2E_PORT: String(port), PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(root, "server.log"),
+      PAPERCLIP_RUNNER_BINARY: resolvePaperclipRunnerBinaryForHarness(executions, repositoryRoot),
+      PAPERCLIP_VITE_CACHE_DIR: path.join(root, "vite-cache"), PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false",
+      PAPERCLIP_AGENT_JWT_SECRET: randomBytes(48).toString("hex"), PAPERCLIP_DECISION_SIGNING_SECRET: randomBytes(48).toString("hex"),
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: randomBytes(48).toString("hex"), BETTER_AUTH_SECRET: randomBytes(48).toString("hex"),
+    });
+    assertActive();
+    child = spawn(process.execPath, runnerE2ETypeScriptProcessArgs(repositoryRoot, path.join(repositoryRoot, "tests/runner-e2e/server.ts")), { cwd: repositoryRoot, env, detached: process.platform !== "win32", stdio: "ignore" });
+    let failed = false;
+    child.once("error", () => { failed = true; });
+    const origin = `http://127.0.0.1:${port}`;
     const deadline = Date.now() + 180_000;
     while (Date.now() < deadline) {
+      assertActive();
       if (failed || child.exitCode !== null) throw new ConnectionBlock("blocked_target", "managed_server_start_failed");
-      try { const response = await fetch(`${origin}/api/health`, { redirect: "error", signal: AbortSignal.timeout(1500) }); if (response.ok) return { origin, stop }; } catch { /* Bounded startup. */ }
+      try {
+        const response = await fetch(`${origin}/api/health`, { redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(1500)]) : AbortSignal.timeout(1500) });
+        if (response.ok) { assertActive(); return { origin, stop }; }
+      } catch { assertActive(); /* Bounded startup. */ }
       await connectionDelay(500);
     }
     throw new ConnectionBlock("blocked_target", "managed_server_start_timeout");
