@@ -651,3 +651,14 @@ subscription combinations remain unqualified. Gemini CLI 0.58.0 has an upstream
 ACP new-file error conversion defect. The provider-free filesystem probe exposes
 that defect without modifying the installed CLI. Provider overloads and one
 follow-up timeout also remain live qualification limits.
+
+### Gateway completion compatibility
+
+Provider-facing `paperclip_finish` accepts an omitted or `null` continuation for
+`done`, `completed`, and `needs_review`. This supports gateways that require all
+declared tool properties to be present. Normalization removes only `null`;
+non-yielding tool calls still reject a continuation object, and `yielded` still
+requires a complete `response_wake` object.
+
+Task-card account repair uses the provider reconnect form for routed accounts,
+retaining the saved endpoint, protocol, model aliases, and connection identity.
