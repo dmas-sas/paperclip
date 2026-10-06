@@ -21,6 +21,40 @@ import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
 type Row = Record<string, any>;
 
+export async function cleanupConnectionCompany(input: {
+  api: ConnectionApi; companyId: string; agentName: string;
+  attachedCompany: boolean; retainCompany: boolean;
+  evidence: Pick<ConnectionEvidence, "cleanupRetained" | "companyArchived">;
+  collectDiagnostics: () => Promise<void>;
+}) {
+  const { api, companyId, agentName, evidence } = input;
+  const agents = await api.get<Row[]>(`/api/companies/${companyId}/agents`);
+  const fixtureAgents = agents.filter(agent => agent.name === agentName);
+  try {
+    for (const agent of fixtureAgents) {
+      await api.patch(`/api/agents/${agent.id}`, { status: "paused" });
+      const liveRuns = await api.get<Row[]>(`/api/companies/${companyId}/heartbeat-runs?agentId=${agent.id}&limit=100`);
+      for (const run of liveRuns.filter(run => run.agentId === agent.id && ["queued", "running"].includes(run.status))) {
+        await api.post(`/api/heartbeat-runs/${run.id}/cancel`);
+      }
+    }
+  } finally {
+    // Deleting an attached-company agent also deletes its runs and logs.
+    // Capture the stopped runs first, including when cancellation fails.
+    await input.collectDiagnostics();
+  }
+  if (input.retainCompany) { evidence.cleanupRetained = true; return; }
+  const connections = (await api.get(`/api/companies/${companyId}/ai-connections`)).connections;
+  for (const connection of connections.filter((connection: Row) => connection.status !== "revoked")) {
+    await api.delete(`/api/tool-connections/${connection.id}`);
+  }
+  if ((await api.get(`/api/companies/${companyId}/ai-connections`)).connections.some((connection: Row) => connection.status !== "revoked")) {
+    throw new ConnectionFailure("connection_revocation_failed");
+  }
+  if (!input.attachedCompany) { await api.post(`/api/companies/${companyId}/archive`); evidence.companyArchived = true; }
+  else for (const agent of fixtureAgents) await api.delete(`/api/agents/${agent.id}`);
+}
+
 export async function openConnectionBrowser(config: ConnectionConfig, repositoryRoot: string, origin: string) {
   const temporary = config.browser.freshness === "signed-out" || !config.browser.profileDir;
   const profile = temporary ? await mkdtemp(path.join(os.tmpdir(), "paperclip-qa-browser-")) : path.resolve(config.browser.profileDir!);
@@ -95,6 +129,18 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
   let fixtures: Awaited<ReturnType<FixtureRegistry["setupAll"]>> | undefined;
   const observedRuns = new Map<string, Row>();
   let diagnosticApi: ConnectionApi | undefined;
+  let diagnosticsCollected = false;
+  const collectDiagnostics = async () => {
+    if (diagnosticsCollected || !diagnosticApi || !observedRuns.size) return;
+    evidence.runDiagnostics = [];
+    for (const observed of observedRuns.values()) {
+      let run = observed; let log: unknown;
+      try { run = await diagnosticApi.get(`/api/heartbeat-runs/${observed.id}`); observedRuns.set(observed.id, run); } catch { /* Keep the last durable observation. */ }
+      try { log = await diagnosticApi.get(`/api/heartbeat-runs/${observed.id}/log?limitBytes=2000000`); } catch { /* Mark missing log evidence explicitly. */ }
+      evidence.runDiagnostics.push(connectionRunDiagnostic(run, log));
+    }
+    diagnosticsCollected = true;
+  };
   const loginSessions = new Map<string, "DELETE" | "POST">();
   const loginObservers: Promise<void>[] = [];
   let stopped: "test_interrupted" | "cell_deadline_reached" | undefined;
@@ -164,21 +210,10 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
         try { await api.response(route, method); }
         catch (error) { if (!(error instanceof ConnectionFailure) || error.message !== "api_status_404") throw error; }
       }
-      const agents = await api.get<Row[]>(`/api/companies/${company.id}/agents`);
-      for (const agent of agents.filter(agent => agent.name === `Connection QA ${nonce}`)) {
-        await api.patch(`/api/agents/${agent.id}`, { status: "paused" });
-        const liveRuns = await api.get<Row[]>(`/api/companies/${company.id}/heartbeat-runs?agentId=${agent.id}&limit=100`);
-        const active = liveRuns.filter(run => run.agentId === agent.id && ["queued", "running"].includes(run.status));
-        for (const run of active) await api.post(`/api/heartbeat-runs/${run.id}/cancel`);
-      }
-      if (config.retainCompany) { evidence.cleanupRetained = true; return; }
       // The fixture verified the company was empty before running. Revoke all
       // newly created test connections even if a later UI assertion failed.
-      const connections = (await api.get(`/api/companies/${company.id}/ai-connections`)).connections;
-      for (const connection of connections.filter((connection: Row) => connection.status !== "revoked")) await api.delete(`/api/tool-connections/${connection.id}`);
-      if ((await api.get(`/api/companies/${company.id}/ai-connections`)).connections.some((connection: Row) => connection.status !== "revoked")) throw new ConnectionFailure("connection_revocation_failed");
-      if (!attachedCompany) { await api.post(`/api/companies/${company.id}/archive`); evidence.companyArchived = true; }
-      else for (const agent of agents.filter(agent => agent.name === `Connection QA ${nonce}`)) await api.delete(`/api/agents/${agent.id}`);
+      await cleanupConnectionCompany({ api, companyId: company.id, agentName: `Connection QA ${nonce}`,
+        attachedCompany: Boolean(attachedCompany), retainCompany: config.retainCompany, evidence, collectDiagnostics });
     } });
     registry.register<Row>({ id: "connection-environment", dependencies: ["connection-company"], setup: async values => {
       const company = values.get("connection-company") as Row;
@@ -222,16 +257,9 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
     catch (cleanupError) { result.cleanup = "failed"; result.status = "failed"; result.failureClass = "cleanup_failure"; result.error = `${result.error ? `${result.error}; ` : ""}fixture_cleanup_failed`;
       const causes = cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError];
       console.log(`[provider-connections] Cleanup: ${causes.map(cause => safeConnectionFailure(cause, "cleanup")).join(", ")}`); }
-    // Project errors before a managed target removes its DB/logs.
-    if (diagnosticApi && observedRuns.size) {
-      evidence.runDiagnostics = [];
-      for (const observed of observedRuns.values()) {
-        let run = observed; let log: unknown;
-        try { run = await diagnosticApi.get(`/api/heartbeat-runs/${observed.id}`); observedRuns.set(observed.id, run); } catch { /* Keep the last durable observation. */ }
-        try { log = await diagnosticApi.get(`/api/heartbeat-runs/${observed.id}/log?limitBytes=2000000`); } catch { /* Mark missing log evidence explicitly. */ }
-        evidence.runDiagnostics.push(connectionRunDiagnostic(run, log));
-      }
-    }
+    // Also preserve evidence when setup or early cleanup failed before the
+    // company teardown reached its capture point. Never refetch deleted runs.
+    await collectDiagnostics();
     try { await browser?.close(); }
     catch { result.cleanup = "failed"; result.status = "failed"; result.failureClass = "cleanup_failure"; result.error = "qa_browser_cleanup_failed"; }
     result.finishedAt = new Date().toISOString();

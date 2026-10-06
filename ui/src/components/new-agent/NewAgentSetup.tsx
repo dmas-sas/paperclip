@@ -684,7 +684,7 @@ function Setup({
                     type="button"
                     aria-current={step === screen ? "step" : undefined}
                     disabled={
-                      busy || Boolean(created) || index > steps.indexOf(screen)
+                      busy || Boolean(created) || step === "saved"
                     }
                     onClick={() => setScreen(step)}
                     className={cn(
@@ -1143,7 +1143,7 @@ function Setup({
                       state={testState}
                       result={result}
                       error={error}
-                      disabled={!ready || busy}
+                      disabled={!ready || busy || Boolean(connectionAdapter && !connection)}
                       onTest={() => void runTest()}
                     />
                     {error && testState !== "fail" && (
@@ -1165,7 +1165,14 @@ function Setup({
                       ) : (
                         <span />
                       )}
-                      <Button
+                      {connectionAdapter && !connection ? <Button
+                        type="button"
+                        disabled={!ready || busy}
+                        onClick={() => setScreen("connect")}
+                      >
+                        Connect model
+                        <ArrowRight className="size-4" />
+                      </Button> : <Button
                         type="submit"
                         disabled={
                           !ready ||
@@ -1176,7 +1183,7 @@ function Setup({
                       >
                         {saving ? "Creating…" : "Finish setup"}
                         <Check className="size-4" />
-                      </Button>
+                      </Button>}
                     </div>
                   </form>
                 )}

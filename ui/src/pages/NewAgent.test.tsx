@@ -200,6 +200,35 @@ afterEach(async () => {
   container.remove();
 });
 describe("New agent setup", () => {
+  it.each(["claude_local", "codex_local"])("can choose a sign-in environment in Configure before connecting %s", async (adapterType) => {
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "no-login" });
+    envApi.list.mockResolvedValue([
+      { id: "no-login", name: "No browser sign-in", status: "active", driver: "sandbox", config: { provider: "other" } },
+      { id: "login-env", name: "Browser sign-in", status: "active", driver: "sandbox", config: { provider: "daytona" } },
+    ]);
+    envApi.capabilities.mockResolvedValue({ sandboxProviders: { daytona: { supportsLoginPty: true } } });
+    api.getAdapterAuthSignal.mockResolvedValue({ status: "missing" });
+    await render(adapterType);
+    expect(container.textContent).toContain("does not support browser sign-in");
+    expect(container.querySelector('select[aria-label="Environment"]')).toBeNull();
+    await click("2Configure");
+    expect(container.querySelector('button[type="submit"]')).toBeNull();
+    expect([...container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Run test")?.disabled).toBe(true);
+    await click("Connect model");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
+    await click("2Configure");
+    const select = container.querySelector('select[aria-label="Environment"]') as HTMLSelectElement;
+    await act(async () => {
+      select.value = "login-env";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+    expect(container.querySelector('select[aria-label="Environment"]')).toBeNull();
+    await click("Complete subscription login");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ defaultEnvironmentId: "login-env", runtimeConfig: { aiConnection: { method: "subscription" } } });
+  });
   it("waits for the resolved environment before allowing a credential-mode selection", async () => {
     let resolveEnvironments!: (value: object[]) => void;
     envApi.list.mockImplementationOnce(() => new Promise<object[]>(resolve => { resolveEnvironments = resolve; }));
