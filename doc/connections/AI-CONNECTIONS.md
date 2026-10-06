@@ -615,3 +615,14 @@ calculation, completed the task, and ran a context-dependent follow-up. Actual
 tool output was verified for all four successful runs. Private gateways still
 have deterministic mapping and validation coverage but need live verification
 in the target deployment. Short-lived Bedrock keys must be rotated before expiry.
+
+### Gateway completion compatibility
+
+Provider-facing `paperclip_finish` accepts an omitted or `null` continuation for
+`done`, `completed`, and `needs_review`. This supports gateways that require all
+declared tool properties to be present. Normalization removes only `null`;
+non-yielding tool calls still reject a continuation object, and `yielded` still
+requires a complete `response_wake` object.
+
+Task-card account repair uses the provider reconnect form for routed accounts,
+retaining the saved endpoint, protocol, model aliases, and connection identity.
