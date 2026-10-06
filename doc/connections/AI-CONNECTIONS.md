@@ -543,7 +543,7 @@ credentials belong to the connection; the model belongs to the agent.
 | Hermes local | OpenRouter; custom/local Chat Completions |
 | Gemini CLI, Grok | Their native API connections; custom routes are not advertised |
 
-Migration `0300` adds Google to both account-default provider constraints. Local
+Migration `0301` adds Google to both account-default provider constraints. Local
 Gemini connections seed the API-key auth choice in their disposable home before
 environment probes and task execution. The settings file contains no credential.
 
