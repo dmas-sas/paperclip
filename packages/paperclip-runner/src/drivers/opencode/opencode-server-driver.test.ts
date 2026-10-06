@@ -12,6 +12,9 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createServer as createHttpServer } from "node:http";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
@@ -628,11 +631,66 @@ describe("OpenCodeServerDriver", () => {
       const configPath = join(root, "routing", "config", "opencode", "opencode.json");
       expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({
         model: "paperclip/team/model-alias", small_model: "paperclip/team/model-alias", plugin: [],
-        provider: { paperclip: { npm: "@ai-sdk/openai-compatible", options: { baseURL: "https://gateway.example/v1", apiKey: "selected-gateway-key" }, models: { "team/model-alias": { name: "team/model-alias" } } } },
+        provider: { paperclip: { npm: "@ai-sdk/openai-compatible", options: { baseURL: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/v1$/), apiKey: expect.any(String) }, models: { "team/model-alias": { name: "team/model-alias" } } } },
       });
       expect((await stat(configPath)).mode & 0o777).toBe(0o600);
+      const shell = await promisify(execFile)("sh", ["-c", 'cat "$1"', "sh", configPath]);
+      expect(shell.stdout).not.toContain("selected-gateway-key");
+      const environment = JSON.parse(await readFile(join(root, "routing", "data", "fake-environment.json"), "utf8"));
+      expect(environment.keys).not.toContain("PAPERCLIP_AI_PROVIDER_KEY");
     } finally {
       await session.close({ reason: "test" });
+    }
+  });
+
+  it.each(["gateway-key", ""])("forwards selected-model streams without exposing the reusable key and revokes the proxy on close (%s)", async key => {
+    const received: Array<{ path: string; authorization?: string; body: unknown }> = [];
+    const upstream = createHttpServer((request, response) => {
+      void (async () => {
+        const chunks = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        received.push({ path: request.url!, authorization: request.headers.authorization, body });
+        response.writeHead(200, { "content-type": "text/event-stream", "x-provider-private-header": "private" });
+        response.write('data: {"choices":[]}\n\n');
+        if (body.messages[0].content !== "hold") response.end('data: [DONE]\n\n');
+      })().catch(() => response.destroy());
+    });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-proxy-"));
+    roots.push(root);
+    let session: Awaited<ReturnType<OpenCodeServerDriver["openSession"]>> | undefined;
+    try {
+      const driver = new OpenCodeServerDriver({
+        model: "paperclip/team/model-alias", runtimeDirectory: root, command: fixture,
+        environment: { PATH: process.env.PATH, PAPERCLIP_AI_PROVIDER_URL: `http://127.0.0.1:${address.port}/custom/v1`, PAPERCLIP_AI_PROVIDER_KEY: key },
+      });
+      session = await driver.openSession({ runId: "proxy", normalizedSessionId: "proxy", workingDirectory: root });
+      const config = JSON.parse(await readFile(join(root, "proxy", "config", "opencode", "opencode.json"), "utf8"));
+      const { baseURL, apiKey } = config.provider.paperclip.options;
+      expect(apiKey).not.toBe(key);
+      const url = `${baseURL}/chat/completions`;
+      const headers = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
+      const payload = { model: "team/model-alias", stream: true, messages: [{ role: "user", content: "test" }] };
+      expect((await fetch(url, { method: "POST", body: JSON.stringify(payload) })).status).toBe(401);
+      expect((await fetch(`${baseURL}/models`, { headers })).status).toBe(404);
+      expect((await fetch(url, { method: "POST", headers, body: JSON.stringify({ ...payload, model: "other" }) })).status).toBe(400);
+      expect(received).toHaveLength(0);
+      const result = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
+      expect(result.headers.get("x-provider-private-header")).toBeNull();
+      expect(await result.text()).toBe('data: {"choices":[]}\n\ndata: [DONE]\n\n');
+      expect(received).toEqual([{ path: "/custom/v1/chat/completions", authorization: key ? `Bearer ${key}` : undefined, body: payload }]);
+      const pending = await fetch(url, { method: "POST", headers, body: JSON.stringify({ ...payload, messages: [{ role: "user", content: "hold" }] }) });
+      const pendingText = pending.text().then(() => "unexpected completion", () => "aborted");
+      await session.close({ reason: "test" });
+      session = undefined;
+      expect(await pendingText).toBe("aborted");
+      await expect(fetch(url, { method: "POST", headers, body: JSON.stringify(payload) })).rejects.toThrow();
+    } finally {
+      await session?.close({ reason: "test" });
+      await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
     }
   });
 
