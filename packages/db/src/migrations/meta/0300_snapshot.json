@@ -1,5 +1,5 @@
 {
-  "id": "6f6adf6c-c061-4640-8309-6a53de8dd224",
+  "id": "dfa5064e-7b35-4d20-8a3d-aa808c4d92e0",
   "prevId": "0eac674e-f69a-4f25-b800-3be01b8fd28d",
   "version": "7",
   "dialect": "postgresql",
@@ -2894,7 +2894,7 @@
       "checkConstraints": {
         "ai_connection_defaults_provider_check": {
           "name": "ai_connection_defaults_provider_check",
-          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google')"
+          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai')"
         },
         "ai_connection_defaults_method_check": {
           "name": "ai_connection_defaults_method_check",
@@ -3367,7 +3367,7 @@
       "checkConstraints": {
         "ai_provider_defaults_provider_check": {
           "name": "ai_provider_defaults_provider_check",
-          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google')"
+          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai')"
         }
       },
       "isRLSEnabled": false
@@ -39410,7 +39410,7 @@
         },
         "resource_lifecycle_events_action_check": {
           "name": "resource_lifecycle_events_action_check",
-          "value": "\"resource_lifecycle_events\".\"action\" = 'create' OR (\"resource_lifecycle_events\".\"resource_type\" = 'agent' AND \"resource_lifecycle_events\".\"action\" IN ('pause', 'resume', 'terminate'))"
+          "value": "\"resource_lifecycle_events\".\"action\" = 'create' OR (\"resource_lifecycle_events\".\"resource_type\" = 'project' AND \"resource_lifecycle_events\".\"action\" = 'update') OR (\"resource_lifecycle_events\".\"resource_type\" = 'agent' AND \"resource_lifecycle_events\".\"action\" IN ('pause', 'resume', 'terminate'))"
         }
       },
       "isRLSEnabled": false
