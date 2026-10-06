@@ -1,5 +1,5 @@
 {
-  "id": "340cf1c4-4d55-4765-87bd-56360afc6b4c",
+  "id": "300dc8d4-29f3-4eb5-8498-3ecc69e4ea0a",
   "prevId": "befbd58f-acb8-4fd4-bb64-4c1c0cfd0f3e",
   "version": "7",
   "dialect": "postgresql",
@@ -2894,7 +2894,7 @@
       "checkConstraints": {
         "ai_connection_defaults_provider_check": {
           "name": "ai_connection_defaults_provider_check",
-          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google')"
+          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai')"
         },
         "ai_connection_defaults_method_check": {
           "name": "ai_connection_defaults_method_check",
@@ -3367,7 +3367,7 @@
       "checkConstraints": {
         "ai_provider_defaults_provider_check": {
           "name": "ai_provider_defaults_provider_check",
-          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google')"
+          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai')"
         }
       },
       "isRLSEnabled": false
@@ -51887,6 +51887,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "requested_company_id": {
+          "name": "requested_company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         },
         "grant_id": {
           "name": "grant_id",

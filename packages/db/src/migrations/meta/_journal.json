@@ -2112,8 +2112,29 @@
     {
       "idx": 303,
       "version": "7",
-      "when": 1791306282624,
-      "tag": "0303_fuzzy_maverick",
+      "when": 1791298395603,
+      "tag": "0303_supreme_garia",
+      "breakpoints": true
+    },
+    {
+      "idx": 304,
+      "version": "7",
+      "when": 1791298446043,
+      "tag": "0304_curvy_shadow_king",
+      "breakpoints": true
+    },
+    {
+      "idx": 305,
+      "version": "7",
+      "when": 1791300719193,
+      "tag": "0305_chubby_vin_gonzales",
+      "breakpoints": true
+    },
+    {
+      "idx": 306,
+      "version": "7",
+      "when": 1791308714862,
+      "tag": "0306_familiar_titania",
       "breakpoints": true
     }
   ]
