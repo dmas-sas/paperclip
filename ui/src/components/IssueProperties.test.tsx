@@ -465,6 +465,24 @@ function renderProperties(container: HTMLDivElement, props: ComponentProps<typeo
 describe("IssueProperties", () => {
   let container: HTMLDivElement;
 
+  it("surfaces saved PR review links even when external objects are unavailable", async () => {
+    mockIssuesApi.listWorkProducts.mockResolvedValue([{
+      id: "pr-1", type: "pull_request", provider: "github", title: "Update runtime probe",
+      url: null, metadata: { url: "https://github.com/example/private-repo/pull/42" },
+      status: "ready_for_review", reviewState: "needs_board_review", updatedAt: new Date(),
+    }]);
+    const root = renderProperties(container, {
+      issue: createIssue(), childIssues: [], onUpdate: vi.fn(), inline: true,
+      externalObjectsError: true,
+    });
+    await waitForAssertion(() => {
+      const link = container.querySelector('a[href="https://github.com/example/private-repo/pull/42"]');
+      expect(link?.textContent).toBe("example/private-repo#42");
+      expect(container.textContent).toContain("Review requested");
+    });
+    act(() => root.unmount());
+  });
+
   beforeEach(() => {
     mockSidebarState.isMobile = false;
     container = document.createElement("div");

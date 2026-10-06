@@ -750,3 +750,14 @@ do not substitute an `ask_user_questions` permission checklist or ask the human
 to edit settings manually. Yield while waiting. Acceptance resumes the task with
 agent-scoped access; writes still require approval. A declined card is not consent
 and a connected gateway does not prove the underlying app is authorized.
+
+**PR review handoffs.**
+
+For a PR, put its link in the work product's top-level `url` field. If a human
+must review or merge it before you can continue, name that action in a durable
+human-only interaction with an appropriate continuation policy and leave the
+task `in_review`. A `needs_board_review` work-product flag and a periodic monitor
+do not create an interaction card. Keep any merge check bounded, record its
+purpose in the monitor's `notes`, and verify the actual provider state when you
+resume; a confirmation response is not proof of a merge. Update the existing PR
+work product when the PR merges or closes instead of registering a duplicate.
