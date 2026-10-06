@@ -2821,6 +2821,8 @@ export * from "./browser-use.js";
 export * from "./types/skill-source.js";
 export * from "./validators/skill-source.js";
 export * from "./github-skill-repository.js";
+export * from "./public-mcp.js";
+
 
 export * from "./ai-provider-routing.js";
 export { aiConnectionRouterSlug, aiConnectionRouterAppDefinition, aiConnectionRouterPluginKey } from "./ai-connection-router.js";
