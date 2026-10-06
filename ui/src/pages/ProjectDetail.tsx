@@ -605,6 +605,8 @@ export function ProjectDetail() {
       metric: "billed_cents",
       windowKind: "lifetime",
       amount: 0,
+      unpricedEventCount: 0, pendingRunCount: 0,
+      unpricedUsagePolicy: "block",
       observedAmount: 0,
       remainingAmount: 0,
       utilizationPercent: 0,
@@ -626,6 +628,7 @@ export function ProjectDetail() {
         scopeType: "project",
         scopeId: project?.id ?? routeProjectRef,
         amount,
+        ...(projectBudgetSummary.amount === 0 && amount > 0 ? { isActive: true } : {}),
         windowKind: "lifetime",
       }),
     onSuccess: () => {

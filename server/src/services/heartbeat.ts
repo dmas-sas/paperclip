@@ -17,6 +17,9 @@ import {
   type NativeWorkspaceFinalizationOwnership,
 } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { hasStopOnlyCleanup, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
+import { reserveRunBudget } from "./budget-reservations.js";
+import { accountRunCost, createCostAccountingReconciler } from "./run-cost-accounting.js";
+import { createRunUsageRecorder } from "./usage-receipts.js";
 import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { externalConversationStateSql, nonIdleSlackIssueCondition } from "./slack-conversation-state.js";
@@ -313,7 +316,6 @@ import {
   appendWithByteCap,
   MAX_EXCERPT_BYTES,
 } from "../adapters/utils.js";
-import { costService } from "./costs.js";
 import {
   authorizeChatConversationForBoundRun,
   isExternalChatWaitAuthorizationContention,
@@ -345,7 +347,7 @@ import {
 import { reportRunFailure } from "./run-failure-report.js";
 import { collectRunFailureSecretValues, type RunFailureReportOptions } from "./run-failure-diagnostics.js";
 import { companySkillService } from "./company-skills.js";
-import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { budgetService, withCurrentBudgetEnforcement, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import {
   resolveDefaultAgentWorkspaceDir,
@@ -686,6 +688,7 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
+  "cost.reported",
 ];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXTERNAL_ATTACHMENT_OMISSIONS_KEY = "externalAttachmentOmissions";
@@ -5338,21 +5341,23 @@ function resolveLedgerBiller(result: AdapterExecutionResult): string {
   );
 }
 
-function normalizeBilledCostCents(
+export function normalizeBilledCostCents(
   costUsd: number | null | undefined,
   billingType: BillingType,
 ): number {
   if (billingType === "subscription_included") return 0;
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
-  return Math.max(0, Math.round(costUsd * 100));
+  return Math.max(0, Number((costUsd * 100).toFixed(7)));
 }
 
 export function resolveLedgerCostStatus(input: {
   costUsd: number | null | undefined;
+  billingType?: BillingType;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
 }): CostStatus {
+  if (input.billingType === "subscription_included") return "reported";
   // A paused turn can have neither a token receipt nor a cost receipt. Zero
   // normalized counters do not establish that its billed cost was zero.
   return typeof input.costUsd === "number" &&
@@ -5558,12 +5563,13 @@ function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
   };
 }
 
-function deriveNormalizedUsageDelta(
+export function normalizeAdapterRunUsage(
   current: UsageTotals | null,
   previous: UsageTotals | null,
+  usageBasis?: "per_run" | "session_cumulative" | null,
 ): UsageTotals | null {
   if (!current) return null;
-  if (!previous) return { ...current };
+  if (!previous || usageBasis !== "session_cumulative") return { ...current };
 
   const inputTokens =
     current.inputTokens >= previous.inputTokens
@@ -12154,7 +12160,7 @@ export function heartbeatService(
     // Adapters that declare per-run usage (e.g. the ACPX lane reports each
     // turn's tokens, not session totals) must not be session-delta'd, or
     // consecutive runs would be undercounted.
-    if (!sessionId || !rawUsage || usageBasis === "per_run") {
+    if (!sessionId || !rawUsage || usageBasis !== "session_cumulative") {
       return {
         normalizedUsage: rawUsage,
         previousRawUsage: null as UsageTotals | null,
@@ -12167,7 +12173,7 @@ export function heartbeatService(
     });
     const previousRawUsage = readRawUsageTotals(previousRun?.usageJson);
     return {
-      normalizedUsage: deriveNormalizedUsageDelta(rawUsage, previousRawUsage),
+      normalizedUsage: normalizeAdapterRunUsage(rawUsage, previousRawUsage, usageBasis),
       previousRawUsage,
       derivedFromSessionTotals: previousRawUsage !== null,
     };
@@ -12927,6 +12933,10 @@ export function heartbeatService(
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
 
+    // Preserve the receipt-source fence when finalization enriches usage. A
+    // late spool replay must still be able to complete an unfinished receipt.
+    if (patch?.usageJson && previousStatus?.usageJson) patch = { ...patch, usageJson: { ...previousStatus.usageJson, ...patch.usageJson } };
+
     // Cancelling a queued run that never acquired provider execution is
     // positive bootstrap evidence. It must not hold unrelated queued messages.
     if (previousStatus && (status === "cancelled" || status === "interrupted")) {
@@ -13019,6 +13029,10 @@ export function heartbeatService(
     if (previousStatus && (status === "cancelled" || status === "interrupted")) {
       patch = { ...patch, resultJson: cancellationResultJson(previousStatus, status, patch?.resultJson, patch?.errorCode, patch?.error) };
     }
+
+    // Preserve the receipt-source fence when finalization enriches usage. A
+    // late spool replay must still be able to complete an unfinished receipt.
+    if (patch?.usageJson && previousStatus?.usageJson) patch = { ...patch, usageJson: { ...previousStatus.usageJson, ...patch.usageJson } };
 
     // Cancelling a queued run that never acquired provider execution is
     // positive bootstrap evidence. It must not hold unrelated queued messages.
@@ -16399,9 +16413,8 @@ export function heartbeatService(
       .then((rows) => rows[0] ?? null);
   }
 
-  // No code path raises the `ai_connection_busy` error any more. This
-  // function stays because a stored run row can still carry that error code
-  // from an earlier release.
+  // Credential rotation can briefly contend with a fresh runtime read. Keep
+  // the task on its automatic pre-provider retry path while the lock clears.
   async function finalizeAiConnectionBusyDeferral(
     run: typeof heartbeatRuns.$inferSelect,
     error: HttpError,
@@ -16923,7 +16936,7 @@ export function heartbeatService(
     if (checkCostCap && policy.maxDailyCostCents !== null) {
       const [row] = await client
         .select({
-          total: sql<number>`coalesce(sum(${costEvents.costCents})::bigint, 0)`,
+          total: sql<number>`coalesce(sum(${costEvents.costCents})::double precision, 0)`,
         })
         .from(costEvents)
         .where(
@@ -20001,32 +20014,7 @@ export function heartbeatService(
     normalizedUsage?: UsageTotals | null,
   ) {
     await ensureRuntimeState(agent);
-    const usage = normalizedUsage ?? normalizeUsageTotals(result.usage);
-    const inputTokens = usage?.inputTokens ?? 0;
-    const outputTokens = usage?.outputTokens ?? 0;
-    const cachedInputTokens = usage?.cachedInputTokens ?? 0;
-    const billingType = normalizeLedgerBillingType(result.billingType);
-    const billedCostUsd = resolveCacheAdjustedCostUsd(result);
-    const additionalCostCents = normalizeBilledCostCents(
-      billedCostUsd,
-      billingType,
-    );
-    const hasTokenUsage =
-      inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
-    const costStatus = resolveLedgerCostStatus({
-      costUsd: billedCostUsd,
-      inputTokens,
-      cachedInputTokens,
-      outputTokens,
-    });
-    const provider = result.provider ?? "unknown";
-    const biller = resolveLedgerBiller(result);
-    const ledgerScope = await resolveLedgerScopeForRun(
-      db,
-      agent.companyId,
-      run,
-    );
-
+    await accountRunCost(db, run.id, budgetHooks);
     await db
       .update(agentRuntimeState)
       .set({
@@ -20035,34 +20023,10 @@ export function heartbeatService(
         lastRunId: run.id,
         lastRunStatus: run.status,
         lastError: run.error ?? null,
-        totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
-        totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
-        totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
-        totalCostCents: sql`${agentRuntimeState.totalCostCents} + ${additionalCostCents}`,
         updatedAt: new Date(),
       })
       .where(eq(agentRuntimeState.agentId, agent.id));
 
-    if (additionalCostCents > 0 || hasTokenUsage) {
-      const costs = costService(db, budgetHooks);
-      await costs.createEvent(agent.companyId, {
-        heartbeatRunId: run.id,
-        agentId: agent.id,
-        issueId: ledgerScope.issueId,
-        projectId: ledgerScope.projectId,
-        billingCode: ledgerScope.billingCode,
-        provider,
-        biller,
-        billingType,
-        costStatus,
-        model: result.model ?? "unknown",
-        inputTokens,
-        cachedInputTokens,
-        outputTokens,
-        costCents: additionalCostCents,
-        occurredAt: new Date(),
-      });
-    }
   }
 
   // A 403 from claimQueuedRun comes from the run's own persisted identity
@@ -21096,6 +21060,13 @@ export function heartbeatService(
               issueContext.executionWorkspacePreference,
           }
         : null;
+      const storedLedgerScope = parseObject(parseObject(run.usageJson).ledgerScope);
+      const runLedgerScope = Object.keys(storedLedgerScope).length > 0
+        ? storedLedgerScope
+        : await resolveLedgerScopeForRun(db, agent.companyId, run);
+      await db.update(heartbeatRuns).set({
+        usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({ ledgerScope: runLedgerScope })}::jsonb`,
+      }).where(eq(heartbeatRuns.id, run.id));
       const continuationSummary = issueRef && !isConversation(issueContext)
         ? await getIssueContinuationSummaryDocument(db, issueRef.id)
         : null;
@@ -22870,7 +22841,7 @@ export function heartbeatService(
           },
         );
       }
-      const dispatchResolvedInteractionContinuationWithAtomicGate = async <T>(
+      const dispatchResolvedInteractionContinuationAfterAdmission = async <T>(
         dispatch: (markDispatchStarted: () => void) => Promise<T>,
       ): Promise<
         { dispatched: true; resultPromise: Promise<T> } | { dispatched: false }
@@ -22935,6 +22906,30 @@ export function heartbeatService(
           );
         }
         return { dispatched: false };
+      };
+      const dispatchResolvedInteractionContinuationWithAtomicGate = async <T>(
+        dispatch: (markDispatchStarted: () => void) => Promise<T>,
+      ) => {
+        // Admission can wait for accounting locks. Finish that wait before the
+        // final ownership gate, whose callback must enter the adapter directly.
+        const reservation = await reserveRunBudget(db, run.companyId, run.id,
+          readNonEmptyString(runLedgerScope.projectId), runLedgerScope, runOptions.nativeLeaseOwner);
+        let entered = false;
+        try {
+          return await dispatchResolvedInteractionContinuationAfterAdmission((markDispatchStarted) => {
+            entered = true;
+            return dispatch(markDispatchStarted);
+          });
+        } finally {
+          if (!entered && !reservation.reused) {
+            await db.update(heartbeatRuns).set({ costAccountingPending: true,
+              usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingProviderWorkStarted":false}'::jsonb`,
+            }).where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.costAccountedAt)));
+            await accountRunCost(db, run.id, budgetHooks).catch((err) => {
+              logger.warn({ err, runId: run.id }, "Undispatched reservation release remains pending");
+            });
+          }
+        }
       };
       if (!executionTarget || executionTarget.kind === "local") {
         try {
@@ -24756,6 +24751,7 @@ export function heartbeatService(
           adapterFinalizeOutcome = status;
         };
 
+        const usageRecorder = await createRunUsageRecorder(db, { companyId: run.companyId, runId: run.id, adapterType: agent.adapterType });
         let adapterResult: AdapterExecutionResult;
         const runGoalControlRequestId = readNonEmptyString(
           context.goalControlRequestId,
@@ -24838,8 +24834,8 @@ export function heartbeatService(
             );
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(
-                (markDispatchStarted) =>
-                  executePaperclipNativeSession({
+                (markDispatchStarted) => {
+                  return executePaperclipNativeSession({
                     db,
                     execution: nativeExecution,
                     getFreshSessionHandoff: getNativeFreshSessionHandoff,
@@ -24896,11 +24892,14 @@ export function heartbeatService(
                       hasChanges: () => instructionCopies.hasChanges({ companyId: agent.companyId, runId: run.id, target: executionTarget }),
                       collectStopped: collectStoppedInstructions,
                     } : undefined,
+
+                    onUsage: async receipt => { await usageRecorder.capture(receipt); },
                     preparationSpans: nativeRunnerPreparationSpans,
                     // Bootstrap with executable/home discovery while keeping
                     // configured provider values and the server-selected
                     // workspace boundary authoritative.
                     managedGitHub: !useHostGitHub && githubSelection.configured,
+                    billingIdentity: managedAiRuntime ? { provider: managedAiRuntime.attribution.provider, biller: managedAiRuntime.attribution.provider, billingType: managedAiRuntime.attribution.method === "subscription" ? "subscription_included" : "metered_api" } : undefined,
                     managedAiCredentialIdentity: managedAiRuntime?.identity,
                     managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
                     runnerEnvironment: {
@@ -24972,7 +24971,8 @@ export function heartbeatService(
                       markDispatchStarted();
                       await persistRunProcessMetadata(run.id, meta);
                     },
-                  }),
+                  });
+                },
               );
             if (!guardedDispatch.dispatched) return;
             nativeDispatchStarted = true;
@@ -25087,6 +25087,7 @@ export function heartbeatService(
                     onLog,
                     onMeta: onAdapterMeta,
                     onEvent: onAdapterEvent,
+                    onUsage: async receipt => { await usageRecorder.capture(receipt); },
                     onExecutionPhase: executionControl.phases.enter,
                     startupTraceContext: getStartupTraceContext(),
                     onRuntimeProgress: async (progress) => {
@@ -25146,6 +25147,17 @@ export function heartbeatService(
             adapterResult = await guardedDispatch.resultPromise;
           }
           if (instructionSave) adapterResult.resultJson = { ...adapterResult.resultJson, instructionSave };
+
+          if (parseObject(adapterResult.executionRecovery).providerWorkStarted !== false) {
+            const captured = await usageRecorder.complete(adapterResult);
+            adapterResult = { ...adapterResult, ...captured, usageComplete: captured.complete };
+          } else {
+            // Stop may already own the terminal result. Preserve its metadata
+            // while durably recording the proof needed to release admission.
+            await db.update(heartbeatRuns).set({ costAccountingPending: true,
+              usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingProviderWorkStarted":false}'::jsonb`,
+            }).where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.costAccountedAt)));
+          }
           adapterResult = applyWorkspaceRestoreFailure(adapterResult);
           // A returned result can include a failed restore. Keep the workspace
           // barrier closed until required files have been restored.
@@ -25581,64 +25593,66 @@ export function heartbeatService(
                 ? "timed_out"
                 : "failed";
 
-        const cacheAdjustedCostUsd = resolveCacheAdjustedCostUsd(adapterResult);
-        const usageJson =
-          normalizedUsage ||
-          adapterResult.costUsd != null ||
-          cacheAdjustedCostUsd != null
-            ? ({
-                ...(normalizedUsage ?? {}),
-                ...(rawUsage
-                  ? {
-                      rawInputTokens: rawUsage.inputTokens,
-                      rawCachedInputTokens: rawUsage.cachedInputTokens,
-                      rawOutputTokens: rawUsage.outputTokens,
-                    }
-                  : {}),
-                ...(sessionUsageResolution.derivedFromSessionTotals
-                  ? { usageSource: "session_delta" }
-                  : adapterResult.usageBasis === "per_run"
-                    ? { usageSource: "per_run" }
-                    : {}),
-                ...((nextSessionState.displayId ??
-                nextSessionState.legacySessionId)
-                  ? {
-                      persistedSessionId:
-                        nextSessionState.displayId ??
-                        nextSessionState.legacySessionId,
-                    }
-                  : {}),
-                sessionReused:
-                  runtimeForAdapter.sessionId != null ||
-                  runtimeForAdapter.sessionDisplayId != null,
-                taskSessionReused: taskSessionForRun != null,
-                freshSession:
-                  runtimeForAdapter.sessionId == null &&
-                  runtimeForAdapter.sessionDisplayId == null,
-                sessionRotated: sessionCompaction.rotate,
-                sessionRotationReason: sessionCompaction.reason,
-                configFreshness: configFreshnessResultMetadata,
-                provider:
-                  readNonEmptyString(adapterResult.provider) ?? "unknown",
-                biller: resolveLedgerBiller(adapterResult),
-                model: readNonEmptyString(adapterResult.model) ?? "unknown",
-                ...(adapterResult.costUsd != null
-                  ? { costUsd: adapterResult.costUsd }
-                  : {}),
-                ...(cacheAdjustedCostUsd != null
-                  ? { cacheAdjustedCostUsd }
-                  : {}),
-                costStatus: resolveLedgerCostStatus({
-                  costUsd: cacheAdjustedCostUsd,
-                  inputTokens: normalizedUsage?.inputTokens ?? 0,
-                  cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
-                  outputTokens: normalizedUsage?.outputTokens ?? 0,
-                }),
-                billingType: normalizeLedgerBillingType(
-                  adapterResult.billingType,
-                ),
-              } as Record<string, unknown>)
-            : null;
+        const cacheAdjustedCostUsd = adapterResult.costUsdExact != null && adapterResult.cacheAdjustedCostUsd == null
+          ? null : resolveCacheAdjustedCostUsd(adapterResult);
+        const usageJson: Record<string, unknown> = {
+          accountingReceiptReady: adapterResult.usageComplete !== false,
+          costUsdExact: adapterResult.costUsdExact ?? null,
+          providerRequestId: adapterResult.providerRequestId ?? null,
+          ...(normalizedUsage ?? {}),
+          ...(adapterResult.usageByModel ? { usageByModel: adapterResult.usageByModel } : {}),
+          ...(rawUsage
+            ? {
+                rawInputTokens: rawUsage.inputTokens,
+                rawCachedInputTokens: rawUsage.cachedInputTokens,
+                rawOutputTokens: rawUsage.outputTokens,
+              }
+            : {}),
+          ...(sessionUsageResolution.derivedFromSessionTotals
+            ? { usageSource: "session_delta" }
+            : adapterResult.usageBasis === "per_run"
+              ? { usageSource: "per_run" }
+              : {}),
+          ...((nextSessionState.displayId ??
+          nextSessionState.legacySessionId)
+            ? {
+                persistedSessionId:
+                  nextSessionState.displayId ??
+                  nextSessionState.legacySessionId,
+              }
+            : {}),
+          sessionReused:
+            runtimeForAdapter.sessionId != null ||
+            runtimeForAdapter.sessionDisplayId != null,
+          taskSessionReused: taskSessionForRun != null,
+          freshSession:
+            runtimeForAdapter.sessionId == null &&
+            runtimeForAdapter.sessionDisplayId == null,
+          sessionRotated: sessionCompaction.rotate,
+          sessionRotationReason: sessionCompaction.reason,
+          configFreshness: configFreshnessResultMetadata,
+          provider:
+            readNonEmptyString(adapterResult.provider) ?? "unknown",
+          biller: resolveLedgerBiller(adapterResult),
+          model: readNonEmptyString(adapterResult.model) ?? "unknown",
+          ...(adapterResult.costUsd != null
+            ? { costUsd: adapterResult.costUsd }
+            : {}),
+          ...(cacheAdjustedCostUsd != null
+            ? { cacheAdjustedCostUsd }
+            : {}),
+          pricingProvenance: adapterResult.pricingProvenance,
+          costStatus: adapterResult.costStatus ?? resolveLedgerCostStatus({
+            costUsd: cacheAdjustedCostUsd ?? (adapterResult.costUsdExact != null ? Number(adapterResult.costUsdExact) : null),
+            billingType: normalizeLedgerBillingType(adapterResult.billingType),
+            inputTokens: normalizedUsage?.inputTokens ?? 0,
+            cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
+            outputTokens: normalizedUsage?.outputTokens ?? 0,
+          }),
+          billingType: normalizeLedgerBillingType(
+            adapterResult.billingType,
+          ),
+        };
 
         const persistedResultJson = cancellationResultJson(latestRun ?? run, outcome, mergeHeartbeatRunResultJson(
           mergeRunStopMetadataForAgent(agent, outcome, {
@@ -25662,13 +25676,17 @@ export function heartbeatService(
           adapterResult.summary ?? null,
         ), runErrorCode, runErrorMessage);
 
+        const ledgerScope = runLedgerScope;
         const finalRunPatch: Partial<typeof heartbeatRuns.$inferInsert> = {
+          // Accounting must acknowledge even a proven pre-provider failure:
+          // that transaction releases the reservation without creating a charge.
+          costAccountingPending: true,
           finishedAt: new Date(),
           error: runErrorMessage,
           errorCode: runErrorCode,
           exitCode: adapterResult.exitCode,
           signal: adapterResult.signal,
-          usageJson,
+          usageJson: { ...usageJson, ledgerScope },
           resultJson: persistedResultJson,
           sessionIdAfter:
             nextSessionState.displayId ?? nextSessionState.legacySessionId,
@@ -25706,6 +25724,8 @@ export function heartbeatService(
               .set({
                 ...finalRunPatch,
                 resultJson: cancellationResultJson(persistedRunWrite.run, status, finalRunPatch.resultJson, runErrorCode, runErrorMessage),
+
+                usageJson: { ...parseObject(persistedRunWrite.run.usageJson), ...parseObject(finalRunPatch.usageJson) },
                 finishedAt:
                   persistedRunWrite.run.finishedAt ?? finalRunPatch.finishedAt,
                 updatedAt: new Date(),
@@ -25720,6 +25740,9 @@ export function heartbeatService(
               .then((rows) => rows[0] ?? null);
           }
           if (!persistedRun) {
+            await accountRunCost(db, run.id, budgetHooks).catch((err) => {
+              logger.error({ err, runId: run.id }, "Late run accounting queued for recovery");
+            });
             logger.info(
               {
                 runId: run.id,
@@ -25732,6 +25755,10 @@ export function heartbeatService(
           }
         }
         if (persistedRun) {
+          // Accounting recovery is independent of workspace or issue finalization.
+          await accountRunCost(db, persistedRun.id, budgetHooks).catch((err) => {
+            logger.error({ err, runId: run.id }, "Run accounting queued for recovery");
+          });
           persistedRun =
             (await classifyAndPersistRunLiveness(
               persistedRun,
@@ -29455,7 +29482,7 @@ export function heartbeatService(
     return { scanned: candidates.length, dispatched, recovered, deferred };
   }
 
-  async function listProjectScopedRunIds(companyId: string, projectId: string) {
+  async function listProjectScopedRunIds(companyId: string, projectId: string, createdBefore?: Date) {
     const runIssueId = sql<
       string | null
     >`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
@@ -29476,6 +29503,7 @@ export function heartbeatService(
       .where(
         and(
           eq(heartbeatRuns.companyId, companyId),
+          createdBefore ? lt(heartbeatRuns.createdAt, createdBefore) : undefined,
           inArray(heartbeatRuns.status, [
             ...CANCELLABLE_HEARTBEAT_RUN_STATUSES,
           ]),
@@ -29489,6 +29517,7 @@ export function heartbeatService(
   async function listProjectScopedWakeupIds(
     companyId: string,
     projectId: string,
+    database: Db = db,
   ) {
     const wakeIssueId = sql<
       string | null
@@ -29497,7 +29526,7 @@ export function heartbeatService(
       string | null
     >`coalesce(${agentWakeupRequests.payload} ->> 'projectId', ${issues.projectId}::text)`;
 
-    const rows = await db
+    const rows = await database
       .selectDistinctOn([agentWakeupRequests.id], {
         id: agentWakeupRequests.id,
       })
@@ -29527,63 +29556,72 @@ export function heartbeatService(
   async function cancelPendingWakeupsForBudgetScope(
     scope: BudgetEnforcementScope,
   ) {
-    const now = new Date();
-    let wakeupIds: string[] = [];
+    return withCurrentBudgetEnforcement(db, scope, async (tx) => {
+      const now = new Date();
+      let wakeupIds: string[] = [];
 
-    if (scope.scopeType === "company") {
-      wakeupIds = await db
-        .select({ id: agentWakeupRequests.id })
-        .from(agentWakeupRequests)
-        .where(
-          and(
-            eq(agentWakeupRequests.companyId, scope.companyId),
-            inArray(agentWakeupRequests.status, [
-              "queued",
-              "deferred_issue_execution",
-            ]),
-            sql`${agentWakeupRequests.runId} is null`,
-          ),
-        )
-        .then((rows) => rows.map((row) => row.id));
-    } else if (scope.scopeType === "agent") {
-      wakeupIds = await db
-        .select({ id: agentWakeupRequests.id })
-        .from(agentWakeupRequests)
-        .where(
-          and(
-            eq(agentWakeupRequests.companyId, scope.companyId),
-            eq(agentWakeupRequests.agentId, scope.scopeId),
-            inArray(agentWakeupRequests.status, [
-              "queued",
-              "deferred_issue_execution",
-            ]),
-            sql`${agentWakeupRequests.runId} is null`,
-          ),
-        )
-        .then((rows) => rows.map((row) => row.id));
-    } else {
-      wakeupIds = await listProjectScopedWakeupIds(
-        scope.companyId,
-        scope.scopeId,
-      );
-    }
+      if (scope.scopeType === "company") {
+        wakeupIds = await tx
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, scope.companyId),
+              inArray(agentWakeupRequests.status, [
+                "queued",
+                "deferred_issue_execution",
+              ]),
+              sql`${agentWakeupRequests.runId} is null`,
+            ),
+          )
+          .then((rows) => rows.map((row) => row.id));
+      } else if (scope.scopeType === "agent") {
+        wakeupIds = await tx
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, scope.companyId),
+              eq(agentWakeupRequests.agentId, scope.scopeId),
+              inArray(agentWakeupRequests.status, [
+                "queued",
+                "deferred_issue_execution",
+              ]),
+              sql`${agentWakeupRequests.runId} is null`,
+            ),
+          )
+          .then((rows) => rows.map((row) => row.id));
+      } else {
+        wakeupIds = await listProjectScopedWakeupIds(
+          scope.companyId,
+          scope.scopeId,
+          tx,
+        );
+      }
 
-    if (wakeupIds.length === 0) return 0;
+      if (wakeupIds.length === 0) return 0;
 
-    await db
-      .update(agentWakeupRequests)
-      .set({
-        status: "cancelled",
-        finishedAt: now,
-        error: "Cancelled due to budget pause",
-        updatedAt: now,
-      })
-      .where(inArray(agentWakeupRequests.id, wakeupIds));
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: "Cancelled due to budget pause",
+          updatedAt: now,
+        })
+        .where(and(
+          inArray(agentWakeupRequests.id, wakeupIds),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          isNull(agentWakeupRequests.runId),
+          scope.createdBefore ? lt(agentWakeupRequests.createdAt, scope.createdBefore) : undefined,
+        ));
 
-    return wakeupIds.length;
+      return wakeupIds.length;
+    });
   }
 
   type CancelRunOptions = {
+    budgetEnforcement?: BudgetEnforcementScope;
     errorCode?: string;
     resultJson?: Record<string, unknown>;
     eventMessage?: string;
@@ -29658,25 +29696,40 @@ export function heartbeatService(
     // Established legacy processes must still be stopped if the database is
     // unavailable. Only native or not-yet-dispatched preparation needs this
     // additional durable fence before its existing cancellation path.
-    if (run.runtimeMode === "native" || (!run.runtimeModeResolvedAt && !running && !control)) {
-      const [fenced] = await db.update(heartbeatRuns).set({
-        // Record handoff intent before native cancellation can finalize and release
-        // the run. Only its audited stop acknowledgement suppresses recovery.
-        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
-          ${JSON.stringify(options.errorCode === "issue_reassigned" && options.resultJson?.reassignmentStopConfirmed === true
-            ? { reassignmentStopRequested: true } : {})}::jsonb ||
-          ${JSON.stringify({ cancellation })}::jsonb ||
-          jsonb_build_object('startupCancellation', jsonb_build_object(
-            'requestedAt', ${new Date().toISOString()}::text,
-            'beforeNativeSelection', ${heartbeatRuns.runtimeMode} = 'legacy'
-              and ${heartbeatRuns.runtimeModeResolvedAt} is null
-              and ${heartbeatRuns.executionStage} = 'preparing'
-              and coalesce(${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType' = 'paperclip_runner', false)
-          ))`,
-      }).where(and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status,
-        pendingNativeRetry ? [...CANCELLABLE_HEARTBEAT_RUN_STATUSES, "failed"] : [...CANCELLABLE_HEARTBEAT_RUN_STATUSES],
-      ))).returning();
-      if (!fenced) return getRun(runId);
+    if (options.budgetEnforcement || run.runtimeMode === "native" || (!run.runtimeModeResolvedAt && !running && !control)) {
+      const fence = async (tx: Db) => {
+        const [fenced] = await tx.update(heartbeatRuns).set({
+          // Record handoff intent before native cancellation can finalize and release
+          // the run. Only its audited stop acknowledgement suppresses recovery.
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
+            ${JSON.stringify(options.errorCode === "issue_reassigned" && options.resultJson?.reassignmentStopConfirmed === true
+              ? { reassignmentStopRequested: true } : {})}::jsonb ||
+            ${JSON.stringify({ cancellation })}::jsonb ||
+            jsonb_build_object('startupCancellation', jsonb_build_object(
+              'requestedAt', ${new Date().toISOString()}::text,
+              'beforeNativeSelection', ${heartbeatRuns.runtimeMode} = 'legacy'
+                and ${heartbeatRuns.runtimeModeResolvedAt} is null
+                and ${heartbeatRuns.executionStage} = 'preparing'
+                and coalesce(${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType' = 'paperclip_runner', false)
+            ))`,
+        }).where(and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status,
+          pendingNativeRetry ? [...CANCELLABLE_HEARTBEAT_RUN_STATUSES, "failed"] : [...CANCELLABLE_HEARTBEAT_RUN_STATUSES],
+        ))).returning();
+        return fenced ?? null;
+      };
+      let fenced: typeof run | null;
+      try {
+        fenced = options.budgetEnforcement
+          ? await withCurrentBudgetEnforcement(db, options.budgetEnforcement, fence)
+          : await fence(db);
+      } catch (error) {
+        stopOwnership?.release();
+        throw error;
+      }
+      if (!fenced) {
+        stopOwnership?.release();
+        return getRun(runId);
+      }
       run = fenced;
     }
     const resultJson = { ...(agent
@@ -30048,35 +30101,15 @@ export function heartbeatService(
   }
 
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
-    if (scope.scopeType === "agent") {
-      await cancelActiveForAgentInternal(
-        scope.scopeId,
-        "Cancelled due to budget pause",
-      );
-      await cancelPendingWakeupsForBudgetScope(scope);
-      return;
-    }
-
-    const runIds =
-      scope.scopeType === "company"
-        ? await db
-            .select({ id: heartbeatRuns.id })
-            .from(heartbeatRuns)
-            .where(
-              and(
-                eq(heartbeatRuns.companyId, scope.companyId),
-                inArray(heartbeatRuns.status, [
-                  ...CANCELLABLE_HEARTBEAT_RUN_STATUSES,
-                ]),
-              ),
-            )
-            .then((rows) => rows.map((row) => row.id))
-        : await listProjectScopedRunIds(scope.companyId, scope.scopeId);
-
-    for (const runId of runIds) {
-      await cancelRunInternal(runId, "Cancelled due to budget pause");
-    }
-
+    const runIds = scope.scopeType === "project"
+      ? await listProjectScopedRunIds(scope.companyId, scope.scopeId, scope.createdBefore)
+      : await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, scope.companyId),
+        scope.scopeType === "agent" ? eq(heartbeatRuns.agentId, scope.scopeId) : undefined,
+        scope.createdBefore ? lt(heartbeatRuns.createdAt, scope.createdBefore) : undefined,
+        inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+      )).then((rows) => rows.map((row) => row.id));
+    for (const runId of runIds) await cancelRunInternal(runId, "Cancelled due to budget pause", { budgetEnforcement: scope });
     await cancelPendingWakeupsForBudgetScope(scope);
   }
 
@@ -30445,6 +30478,7 @@ export function heartbeatService(
     scanSilentActiveRuns,
 
     reconcileTaskWatchdogs,
+    reconcileCostAccounting: createCostAccountingReconciler(db, budgetHooks),
 
     buildRunOutputSilence,
 

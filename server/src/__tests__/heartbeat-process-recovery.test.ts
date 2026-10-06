@@ -33,7 +33,9 @@ import {
   agentWakeupRequests,
   approvals,
   authUsers,
+  budgetIncidents,
   budgetPolicies,
+  budgetReservations,
   chatActions,
   chatConversations,
   chatDeliveries,
@@ -585,6 +587,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueTreeHolds);
     await db.delete(agentTaskSessions);
     await db.delete(issueApprovals);
+    await db.delete(budgetIncidents);
     await db.delete(approvals);
     await db.update(issues).set({ lastStatusDecisionId: null });
     await db.delete(statusDecisionEffects);
@@ -7781,6 +7784,36 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
+  it.each([{}, { command: "/nonexistent-paperclip-bootstrap-command" }])("releases holds for real process bootstrap failures: %j", async (config) => {
+    const { execute } = await import("../adapters/process/execute.js");
+    mockAdapterExecute.mockImplementationOnce(execute);
+    const { runId, agentId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued", includeIssue: false });
+    await db.update(agents).set({ adapterType: "process", adapterConfig: config }).where(eq(agents.id, agentId));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await heartbeat.getRun(runId)).toMatchObject({ status: "failed", costAccountingPending: false, costAccountedAt: expect.any(Date) });
+    expect((await db.select().from(budgetReservations).where(eq(budgetReservations.runId, runId)))[0]?.state).toBe("released");
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId))).toEqual([]);
+  });
+
+  it("releases the dispatch reservation after a proven pre-provider adapter failure", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1, signal: null, timedOut: false,
+      errorMessage: "Provider startup failed", provider: "test", model: "test-model",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+    });
+    const { runId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued", includeIssue: false });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    const run = await heartbeat.getRun(runId);
+    expect(run).toMatchObject({ status: "failed", costAccountingPending: false });
+    expect(run?.costAccountedAt).not.toBeNull();
+    expect((await db.select().from(budgetReservations).where(eq(budgetReservations.runId, runId)))[0]).toMatchObject({ state: "released" });
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId))).toEqual([]);
+  });
+
   it.each(["single Stop", "agent pause"] as const)(
     "fences adapter registration while an earlier no-owner %s waits to commit",
     async (operation) => {
@@ -7905,6 +7938,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         releaseAdapter();
         await heartbeat.drainActiveRunExecutions();
         const settledRun = await heartbeat.getRun(runId);
+        expect(settledRun?.costAccountingPending).toBe(false);
+        expect(settledRun?.costAccountedAt).not.toBeNull();
+        expect((await db.select().from(budgetReservations).where(eq(budgetReservations.runId, runId)))[0]).toMatchObject({ state: "released" });
+        expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId))).toEqual([]);
         expect({
           status: settledRun?.status,
           errorCode: settledRun?.errorCode,
@@ -11296,6 +11333,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await waitForRunToSettle(heartbeat, sourceRun.id, 5_000);
     }
     expect(sourceRun?.id).not.toBe(runId);
+    // Durable accounting is bookkeeping, not evidence that the agent acted
+    // on its plan. A receipt must not suppress plan-only recovery.
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, String(sourceRunId)))).toHaveLength(1);
     expect(sourceRun?.livenessState).toBe("plan_only");
     if (withLegacyReview) {
       expect(await db.select().from(issues).where(eq(issues.id, legacyReviewId))).toEqual(legacyReviewBefore);

@@ -6,6 +6,7 @@ import {
   agentWakeupRequests,
   companies,
   costEvents,
+  budgetReservations,
   createDb,
   documentRevisions,
   documents,
@@ -826,6 +827,9 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     afterContinuationDispatchCheck = async ({ runId: guardedRunId, issueId: guardedIssueId }) => {
       expect(guardedRunId).toBe(runId);
       expect(guardedIssueId).toBe(issueId);
+      // Budget admission must finish before this last ownership check. Putting
+      // an awaited reservation inside dispatch lets work escape the row lock.
+      expect((await db.select().from(budgetReservations).where(eq(budgetReservations.runId, runId)))[0]?.state).toBe("held");
       ordering.push("validated");
       parkPromise = Promise.resolve(
         db
@@ -869,6 +873,8 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(issue?.status).toBe("backlog");
     expect(ordering).toEqual(["validated", "parked"]);
     expect(countExecuteCallsForRun(runId)).toBe(0);
+    await heartbeat.drainActiveRunExecutions();
+    expect((await db.select().from(budgetReservations).where(eq(budgetReservations.runId, runId)))[0]?.state).toBe("released");
   });
 
   it("rate-limits skipped generic timer wakes by advancing the timer baseline", async () => {

@@ -191,6 +191,17 @@ const state = vi.hoisted(() => ({
   release: null as null | (() => void),
 }));
 
+const accountingEvents = vi.hoisted(() => ({ committed: undefined as undefined | ((event: PrpEvent) => Promise<void>) }));
+vi.mock("./paperclip-control-plane-port.js", async importOriginal => {
+  const original = await importOriginal<typeof import("./paperclip-control-plane-port.js")>();
+  return { ...original, PaperclipControlPlanePort: class extends original.PaperclipControlPlanePort {
+    constructor(...args: ConstructorParameters<typeof original.PaperclipControlPlanePort>) {
+      super(...args);
+      accountingEvents.committed = args[2]?.onCommittedEvent;
+    }
+  } };
+});
+
 const grokCopyBack = vi.hoisted(() => vi.fn(async (_input: { readSandboxAuth: () => Promise<Buffer>; hostHomeDir: string }) => undefined));
 vi.mock("@paperclipai/adapter-grok-local/server", async importOriginal => ({
   ...await importOriginal<typeof import("@paperclipai/adapter-grok-local/server")>(),
@@ -305,6 +316,7 @@ import {
   nativeUsageCostUsd,
   nativeUsageBiller,
   normalizeNativeUsage,
+  resolveNativeBilling,
   parseRemoteRunnerProcessIdentity,
   REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
   verifyRemoteRunnerReattachment,
@@ -985,6 +997,35 @@ describe("native provider usage normalization", () => {
     expect(nativeUsageCostUsd(usage, provider)).toBeUndefined();
     expect(normalizeNativeUsage(usage)).toMatchObject({ inputTokens: 100, outputTokens: 12 });
   });
+
+  it("retains cache writes and avoids counting Codex cache hits twice", () => {
+    expect(normalizeNativeUsage({ runDelta: { inputTokens: 120, cacheReadTokens: 100, cacheWriteTokens: 5, outputTokens: 10 } }, { inputIncludesCacheReads: true }))
+      .toEqual({ inputTokens: 20, cachedInputTokens: 100, cacheWriteTokens: 5, outputTokens: 10 });
+  });
+  it("does not treat a protocol-default price as free usage", () => {
+    expect(nativeUsageCostUsd({ runDelta: { inputTokens: 20, outputTokens: 10, providerCostUsd: 0 } })).toBeUndefined();
+  });
+  it("reports the actual runtime billing identity", () => {
+    expect(resolveNativeBilling({ kind: "opencode", model: "openrouter/deepseek/test", permissionMode: "allow" }))
+      .toEqual({ provider: "deepseek", biller: "openrouter", billingType: "unknown" });
+    expect(resolveNativeBilling({ kind: "acpx", agent: "claude", model: "claude-test", permissionMode: "approve-all",
+      profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.13.1", agent: "claude", agentProfileVersion: 1,
+        agentServerPackage: "@zed-industries/claude-agent-acp", agentServerVersion: "1", agentRuntimePackage: null,
+        agentRuntimeVersion: null, commandDigest: "fixture" },
+    }, { ANTHROPIC_API_KEY: "test" }))
+      .toEqual({ provider: "anthropic", biller: "anthropic", billingType: "metered_api" });
+  });
+
+  it("prefers the adjusted turn price to cumulative session prices", () => {
+    expect(nativeUsageCostUsd({ providerCostUsd: 10, runDelta: { inputTokens: 10, providerCostUsd: 2, cacheAdjustedCostUsd: 1 } })).toBe(1);
+  });
+  it.each(["OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_API_BASE_URL"])("does not price native or managed proxy traffic as direct OpenAI using %s", key => {
+    const provider = { kind: "codex", model: "gpt-6-astra" } as Parameters<typeof resolveNativeBilling>[0];
+    expect(resolveNativeBilling(provider, { OPENAI_API_KEY: "fixture", [key]: "https://proxy.example/v1" }).biller).toBe("unknown");
+    expect(resolveNativeBilling(provider, { [key]: "https://proxy.example/v1" }, { provider: "openai", biller: "openai", billingType: "metered_api" }).biller).toBe("unknown");
+    expect(resolveNativeBilling(provider, {}, { provider: "openai", biller: "openai", billingType: "metered_api" })).toMatchObject({ biller: "openai", billingType: "metered_api" });
+  });
+
   it("reads remote runner run-delta tokens and provider cost", () => {
     const usage = {
       total: {
@@ -4845,7 +4886,7 @@ function leaseDb(
         where: () => query,
         orderBy: () => query,
         for: () => query,
-        limit: () => Promise.resolve(rows),
+        limit: () => query,
       };
       return query;
     },
@@ -4853,7 +4894,9 @@ function leaseDb(
   const insert = (table: unknown) => ({
     values: (values: Record<string, unknown>) => {
       updates.push({ table, values });
-      return { returning: async () => [values] };
+      const query = { returning: async () => [values], onConflictDoUpdate: () => query, onConflictDoNothing: () => query,
+        then: Promise.resolve([values]).then.bind(Promise.resolve([values])) };
+      return query;
     },
   });
   const tx = {
@@ -5103,6 +5146,27 @@ describe("native startup restart detachment", () => {
       throw new Error("detachment closed the old event stream");
     });
     await expect(executePaperclipNativeSession({ db: leaseDb(restarting), execution: restarting, runnerInstanceId: "runner" })).rejects.toBeInstanceOf(NativeControllerDetachedForRestartError);
+  });
+});
+
+describe("native failed-turn accounting", () => {
+  beforeEach(() => vi.spyOn(issueServiceModule, "issueService").mockReturnValue({ update: vi.fn(async () => ({ status: "blocked", statusVersion: 1 })) } as unknown as ReturnType<typeof issueServiceModule.issueService>));
+  afterEach(() => vi.restoreAllMocks());
+  it.each(["turn.failed", "turn.cancelled", "turn.interrupted", "missing_terminal", "session_total", "empty_usage", "different_turn"])("preserves run usage for %s without certifying incomplete evidence", async (scenario) => {
+    const onUsage = vi.fn(async (_receipt: import("@paperclipai/adapter-utils").AdapterUsageCheckpoint) => {});
+    const failure = new Error("provider_transport_failed: no semantic result");
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      const usage = { inputTokens: 120, cacheReadTokens: 100, outputTokens: 10, providerCostUsd: 0.25 };
+      await accountingEvents.committed!({ eventType: "item.completed", turnId: "turn", emittedAt: new Date().toISOString(), payload: { kind: "usage", usage: scenario === "session_total" ? { total: usage } : { runDelta: scenario === "empty_usage" ? { requests: 1 } : usage } } } as unknown as PrpEvent);
+      if (scenario !== "missing_terminal") await accountingEvents.committed!({ eventType: scenario.startsWith("turn.") ? scenario : "turn.failed", turnId: scenario === "different_turn" ? "another-turn" : "turn", emittedAt: new Date().toISOString(), payload: { status: "failed" } } as unknown as PrpEvent);
+      throw failure;
+    });
+    await expect(executePaperclipNativeSession({ db: leaseDb(), execution: { ...execution, provider: { kind: "codex", model: "gpt-6-astra" } } as NativeExecutionInput, runnerInstanceId: "runner", onUsage })).rejects.toBe(failure);
+    if (["session_total", "empty_usage"].includes(scenario)) expect(onUsage).not.toHaveBeenCalled();
+    else {
+      expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: scenario.startsWith("turn."), costUsd: 0.25, usageBasis: "per_run", usage: { inputTokens: 20, cachedInputTokens: 100, outputTokens: 10 } }));
+      expect(onUsage.mock.calls[0]?.[0]).toMatchObject({ complete: false });
+    }
   });
 });
 
