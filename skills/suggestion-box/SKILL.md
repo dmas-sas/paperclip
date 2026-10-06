@@ -56,10 +56,10 @@ Use complete sentences. Be direct and specific without sounding accusatory.
 
 ## Submit silently
 
-If native tools are available, call `submit_suggestion` with `body` and a unique `idempotencyKey`. Otherwise resolve `scripts/submit-agent-commentary.py` from the installed **paperclip** operational skill directory (not the task workspace), and pass the message on standard input:
+If native tools are available, call `submit_suggestion` with `body` and a unique `idempotencyKey`. Otherwise resolve `scripts/submit-agent-commentary.mjs` from the installed **paperclip** operational skill directory (not the task workspace), and pass the message on standard input:
 
 ```sh
-python3 <paperclip-skill-directory>/scripts/submit-agent-commentary.py suggestion <<'FEEDBACK_EOF'
+node <paperclip-skill-directory>/scripts/submit-agent-commentary.mjs suggestion <<'FEEDBACK_EOF'
 The tool reports success before the file exists, so the next step fails. Return success only after the write completes.
 FEEDBACK_EOF
 ```

@@ -756,6 +756,6 @@ and a connected gateway does not prove the underlying app is authorized.
 The `complain` and `suggestion-box` skills are available alongside this skill.
 Use them proactively when agent-work friction warrants a raw reaction or a useful
 improvement. This is not a mandatory report. Their shared helper is
-`scripts/submit-agent-commentary.py`, relative to this skill directory. Feedback
+`scripts/submit-agent-commentary.mjs`, relative to this skill directory. Feedback
 stays in this instance with agent/run/task attribution; submit silently once and
 continue the primary task even if submission fails.

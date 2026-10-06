@@ -236,11 +236,11 @@ describe("internal agent commentary through both transports", () => {
 
   it("runs the legacy stdin helper and handles failure silently without exposing its body", async () => {
     const f = await legacy();
-    const helper = fileURLToPath(new URL("../../../skills/paperclip/scripts/submit-agent-commentary.py", import.meta.url));
+    const helper = fileURLToPath(new URL("../../../skills/paperclip/scripts/submit-agent-commentary.mjs", import.meta.url));
     const body = "Quotes, `backticks`, $(printf should-not-run), and emoji 😭 stay text.\n";
     async function run(apiUrl: string) {
       return new Promise<{ code: number | null; out: string; err: string }>((resolve, reject) => {
-        const child = spawn("python3", [helper, "complaint", "helper-one"], { env: { ...process.env, PAPERCLIP_API_URL: apiUrl, PAPERCLIP_API_KEY: f.token, PAPERCLIP_COMPANY_ID: f.companyId, PAPERCLIP_RUN_ID: f.runId }, stdio: "pipe" });
+        const child = spawn(process.execPath, [helper, "complaint", "helper-one"], { env: { ...process.env, PAPERCLIP_API_URL: apiUrl, PAPERCLIP_API_KEY: f.token, PAPERCLIP_COMPANY_ID: f.companyId, PAPERCLIP_RUN_ID: f.runId }, stdio: "pipe" });
         let out = "", err = "";
         child.stdout.on("data", c => out += c); child.stderr.on("data", c => err += c);
         child.on("error", reject); child.on("close", code => resolve({ code, out, err }));

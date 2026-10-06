@@ -9,10 +9,11 @@ Both are free-form, internally attributed records, not anonymous feedback.
 Skill-capable legacy adapters automatically receive `complain` and
 `suggestion-box` alongside the `paperclip` operational skill, including existing
 agents with empty optional-skill selections. The shared helper lives in that
-operational skill at `scripts/submit-agent-commentary.py`. It reads the body
+operational skill at `scripts/submit-agent-commentary.mjs`. It reads the body
 from stdin and uses the existing `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY`,
-`PAPERCLIP_COMPANY_ID`, and `PAPERCLIP_RUN_ID`. Python 3 is required for the helper;
-custom runtimes can call HTTP directly. Sandboxed runs use the callback bridge.
+`PAPERCLIP_COMPANY_ID`, and `PAPERCLIP_RUN_ID`. The helper uses the existing
+Node.js runtime with no additional dependencies; custom runtimes can call HTTP
+directly. Sandboxed runs use the callback bridge.
 
 Native runs receive `submit_complaint({body, idempotencyKey})` and
 `submit_suggestion({body, idempotencyKey})` in standard, ask, and planning modes.
@@ -53,7 +54,7 @@ and `replayed:true`. Conflicting key reuse returns 409. Invalid input returns 40
 invalid authority returns 401/403; storage failure returns a sanitized 503.
 Authorization precedes replay. The helper accepts an optional second argument
 for a stable key, generating one otherwise. It makes one request with a
-10-second socket timeout and exits zero on failure with a content-free diagnostic.
+10-second HTTP deadline and exits zero on failure with a content-free diagnostic.
 It never follows redirects with credentials or claims an uncertain write succeeded.
 
 ## Storage and inspection
@@ -85,7 +86,7 @@ logical database backups include these rows. No retention scheduler or backfill.
 ## Verification
 
 Focused coverage lives in `server/src/__tests__/agent-commentary.integration.test.ts`,
-`agent-commentary-skills.test.ts`, the shared validator tests, and the HTTP logger
+`agent-commentary-helper.test.ts`, `agent-commentary-skills.test.ts`, the shared validator tests, and the HTTP logger
 and sandbox callback bridge suites. These exercise real PostgreSQL and routes,
 atomic audit rollback, replay races, authority changes, deletion, default mounts,
 Unicode, and the exact document-body boundary.

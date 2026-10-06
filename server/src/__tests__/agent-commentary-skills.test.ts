@@ -40,9 +40,9 @@ describe("default feedback skill delivery", () => {
     cleanup.push(staged);
     for (const skills of [join(codexHome, "skills"), join(claude.addDir, ".claude", "skills"), join(staged, "skills")]) {
       for (const name of ["complain", "suggestion-box"]) {
-        expect(await readFile(join(skills, name, "SKILL.md"), "utf8")).toContain("scripts/submit-agent-commentary.py");
+        expect(await readFile(join(skills, name, "SKILL.md"), "utf8")).toContain("scripts/submit-agent-commentary.mjs");
       }
-      expect(await readFile(join(skills, "paperclip", "scripts", "submit-agent-commentary.py"), "utf8")).toContain("sys.stdin.buffer");
+      expect(await readFile(join(skills, "paperclip", "scripts", "submit-agent-commentary.mjs"), "utf8")).toContain("process.stdin");
     }
     // Runtime policy removes entries before default selection; never resurrect them.
     const restricted = entries.filter(e => e.key === keys[0]);
