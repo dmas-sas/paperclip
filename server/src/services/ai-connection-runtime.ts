@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { HttpError, unprocessable } from "../errors.js";
-import { mkdtemp, mkdir, symlink, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -17,7 +17,6 @@ import { decideCodexAuthMerge } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
-import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -269,13 +268,15 @@ export async function prepareManagedAiRuntime(
         "The selected default changed. Retry this execution.",
       );
     const credentialRef = selection.grant.credentialSecretRefs.find((ref) => ref.configPath === "ai.credential");
-    if (!credentialRef) throw unprocessable("The selected AI credential is unavailable");
-    const readFreshness = async () => (await db.select({ epoch: companySecrets.aiSessionEpoch, version: companySecrets.latestVersion })
-      .from(companySecrets).where(and(eq(companySecrets.companyId, input.companyId), eq(companySecrets.id, credentialRef.secretId))).limit(1))[0];
-    const freshness = await readFreshness();
-    const value = await service.credential(selection);
-    const afterRead = await readFreshness();
-    if (!freshness || freshness.version !== afterRead?.version || freshness.epoch !== afterRead.epoch) throw unprocessable("The AI credential changed during preparation; retry this execution");
+    const routing = aiConnectionMetadataSchema.parse(selection.connection.config.ai).routing;
+    const noAuth = routing?.auth === "none";
+    if (!noAuth && !credentialRef) throw unprocessable("The selected AI credential is unavailable");
+    const readFreshness = async () => credentialRef ? (await db.select({ epoch: companySecrets.aiSessionEpoch, version: companySecrets.latestVersion })
+      .from(companySecrets).where(and(eq(companySecrets.companyId, input.companyId), eq(companySecrets.id, credentialRef.secretId))).limit(1))[0] : undefined;
+    const freshness = noAuth ? undefined : await readFreshness();
+    const value = noAuth ? "" : await service.credential(selection);
+    const afterRead = noAuth ? undefined : await readFreshness();
+    if (!noAuth && (!freshness || freshness.version !== afterRead?.version || freshness.epoch !== afterRead.epoch)) throw unprocessable("The AI credential changed during preparation; retry this execution");
     home = await mkdtemp(
       path.join(
         os.tmpdir(),
@@ -289,7 +290,6 @@ export async function prepareManagedAiRuntime(
       ...Object.fromEntries(AI_AUTH_ENV_KEYS.map((key) => [key, ""])),
       ...managedAiHomeEnvironment(home),
     };
-    const routing = aiConnectionMetadataSchema.parse(selection.connection.config.ai).routing;
     const capability =
       AI_CONNECTION_CAPABILITIES[input.binding.provider].methods[
         selection.attribution.method
@@ -339,18 +339,7 @@ export async function prepareManagedAiRuntime(
       .digest("hex")
       .slice(0, 16);
     const identity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${generation}`;
-    const sessionIdentity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${credentialRef.secretId}:${freshness.epoch}`;
-    if (input.adapterType === "grok_local") {
-      // Retain only transcripts across disposable credential homes. Scope them
-      // to the company, agent and credential identity, including rotations.
-      // Removing the runtime home removes the link, never its private target.
-      const scope = createHash("sha256")
-        .update(JSON.stringify([input.companyId, input.agentId, sessionIdentity]))
-        .digest("hex");
-      const sessions = path.join(resolvePaperclipInstanceRootForAdapter(), "companies", input.companyId, "grok-sessions", scope);
-      await mkdir(sessions, { recursive: true, mode: 0o700 });
-      await symlink(sessions, path.join(providerHome, "sessions"), "dir");
-    }
+    const sessionIdentity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${noAuth ? "no-auth" : `${credentialRef!.secretId}:${freshness!.epoch}`}`;
     return {
       sessionIdentity,
       config: {

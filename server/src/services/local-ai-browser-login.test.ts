@@ -65,6 +65,23 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
   });
 
+  it("cancels Claude while waiting for its browser code and terminates the provider", async () => {
+    const home = await fakeCli("claude", [
+      'echo $$ > "$CLAUDE_CONFIG_DIR/login.pid"',
+      'printf "Welcome to Claude Code\\nOpening browser to sign in…\\nBrowser didn\x27t open? Use the url below to sign in (c to copy)\\n"',
+      'printf "https://claude.com/cai/oauth/authorize?client_id=cid&code=abcdefgh&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&redirect_uri=https%%3A%%2F%%2Fplatform.claude.com%%2Foauth%%2Fcode%%2Fcallback&response_type=code&scope=user&state=0123456789abcdef\\n"',
+      'printf "Paste code here if prompted >\\n"',
+      'read -r entered',
+    ].join("\n"));
+    const login = startLocalBrowserLogin("anthropic", home);
+    await vi.waitFor(() => expect(login.authorizationUrl).toBeDefined());
+    const pid = Number(await readFile(path.join(home, "login.pid"), "utf8"));
+    login.abort();
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"));
+    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
+    await expect(readFile(path.join(home, ".credentials.json"))).rejects.toThrow();
+  });
+
   it("returns a fixed failure without exposing provider error output", async () => {
     const home = await fakeCli("codex", 'echo "private-provider-error" >&2\nexit 1');
     const login = startLocalBrowserLogin("openai", home);
