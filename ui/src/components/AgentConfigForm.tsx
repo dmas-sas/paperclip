@@ -898,7 +898,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
     (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection,
   ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
-  const connectionModels = useConnectionModels(selectedCompanyId, isCreate ? undefined : aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data, aiRoutingHarness(adapterType, runnerProvider, config.acpxAgent));
+  const connectionModels = useConnectionModels(selectedCompanyId, isCreate ? undefined : aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data, aiRoutingHarness(adapterType, runnerProvider, eff("adapterConfig", "acpxAgent", config.acpxAgent)));
   // Fetch adapter models for the effective provider, including unsaved changes.
   const modelQueryKey = selectedCompanyId
     ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null, modelProvider)
@@ -953,8 +953,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     set: isCreate ? (patch: Partial<CreateConfigValues>) => props.onChange(patch) : null,
     config,
     eff: eff as <T>(group: "adapterConfig", field: string, original: T) => T,
-    mark: (group: "adapterConfig", field: string, value: unknown) => mark(group, field,
-      field === "model" && typeof value === "string" ? connectionModels?.resolveModel(value) ?? value : value),
+    // Harness transitions supply the new harness's default model. Resolve
+    // user-selected model IDs in ModelDropdown, not through the previous
+    // render's harness when adapter fields change several values together.
+    mark,
     models,
     // Resolve the effective instructions-file gate once. The instructions file
     // is an absolute host path, so the managed-sandbox-only policy hides it for
