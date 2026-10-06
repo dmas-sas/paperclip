@@ -483,6 +483,29 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("refreshes PR state when opening Properties over an already loaded task", async () => {
+    const saved = {
+      id: "pr-1", type: "pull_request", provider: "github", title: "Update runtime probe",
+      url: "https://github.com/example/private-repo/pull/42", metadata: {},
+      status: "ready_for_review", reviewState: "needs_board_review", updatedAt: new Date(),
+    };
+    mockIssuesApi.listWorkProducts.mockImplementation(async (_id, options) => [
+      options?.refreshPullRequests ? { ...saved, metadata: { state: "merged" } } : saved,
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.issues.workProducts("issue-1"), [{ ...saved, metadata: { state: "merged" } }]);
+    const root = createRoot(container);
+    act(() => root.render(<QueryClientProvider client={queryClient}>
+      <IssueProperties issue={createIssue()} childIssues={[]} onUpdate={vi.fn()} inline />
+    </QueryClientProvider>));
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith("issue-1", { refreshPullRequests: true });
+      expect(container.textContent).toContain("merged");
+      expect(container.textContent).not.toContain("Review requested");
+    });
+    act(() => root.unmount());
+  });
+
   beforeEach(() => {
     mockSidebarState.isMobile = false;
     container = document.createElement("div");

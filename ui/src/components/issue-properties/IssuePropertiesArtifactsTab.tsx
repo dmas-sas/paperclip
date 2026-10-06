@@ -366,6 +366,7 @@ export function IssuePropertiesArtifactsTab({
   documentDeepLink,
   onOpenDocument,
 }: IssuePropertiesArtifactsTabProps) {
+  const queryClient = useQueryClient();
   const {
     data: attachments,
     isPending: attachmentsPending,
@@ -382,7 +383,9 @@ export function IssuePropertiesArtifactsTab({
     refetch: refetchProducts,
   } = useQuery({
     queryKey: queryKeys.issues.workProducts(issue.id),
-    queryFn: () => issuesApi.listWorkProducts(issue.id),
+    queryFn: () => issuesApi.listWorkProducts(issue.id, {
+      refreshPullRequests: queryClient.getQueryData(queryKeys.issues.workProducts(issue.id)) !== undefined,
+    }),
   });
   const {
     data: documents,

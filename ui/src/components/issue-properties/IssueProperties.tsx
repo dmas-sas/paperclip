@@ -299,7 +299,9 @@ export function IssueProperties({
   });
   const { data: paneTabWorkProducts, isError: workProductsError, refetch: refetchWorkProducts } = useQuery({
     queryKey: queryKeys.issues.workProducts(issue.id),
-    queryFn: () => issuesApi.listWorkProducts(issue.id),
+    queryFn: () => issuesApi.listWorkProducts(issue.id, {
+      refreshPullRequests: queryClient.getQueryData(queryKeys.issues.workProducts(issue.id)) !== undefined,
+    }),
   });
   const pullRequests = useMemo(() => getIssuePullRequests(paneTabWorkProducts), [paneTabWorkProducts]);
   const remainingExternalObjects = useMemo(() => {
