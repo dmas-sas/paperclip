@@ -694,6 +694,46 @@ describe("OpenCodeServerDriver", () => {
     }
   });
 
+  it.each(["HTTP_PROXY", "ALL_PROXY"])("uses the runtime's %s and honors NO_PROXY without changing global transport", async proxySetting => {
+    const requests: string[] = [];
+    const outgoingProxy = createHttpServer((request, response) => {
+      requests.push(request.url!);
+      request.resume();
+      response.writeHead(200, { "content-type": "application/json" }).end('{"choices":[]}');
+    });
+    await new Promise<void>(resolve => outgoingProxy.listen(0, "127.0.0.1", resolve));
+    const address = outgoingProxy.address();
+    if (!address || typeof address === "string") throw new Error("Missing proxy fixture address");
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-outgoing-proxy-"));
+    roots.push(root);
+    const headersAndUrl = async (sessionId: string, noProxy: string) => {
+      const driver = new OpenCodeServerDriver({
+        model: "paperclip/team/model-alias", runtimeDirectory: root, command: fixture,
+        environment: { PATH: process.env.PATH, PAPERCLIP_AI_PROVIDER_URL: "http://gateway.invalid/v1", PAPERCLIP_AI_PROVIDER_KEY: "fixture-key", [proxySetting]: `http://127.0.0.1:${address.port}`, NO_PROXY: noProxy },
+      });
+      const session = await driver.openSession({ runId: sessionId, normalizedSessionId: sessionId, workingDirectory: root });
+      const config = JSON.parse(await readFile(join(root, sessionId, "config", "opencode", "opencode.json"), "utf8"));
+      return { session, url: `${config.provider.paperclip.options.baseURL}/chat/completions`, headers: { Authorization: `Bearer ${config.provider.paperclip.options.apiKey}`, "Content-Type": "application/json" } };
+    };
+    try {
+      const proxied = await headersAndUrl("proxied", "");
+      try {
+        const response = await fetch(proxied.url, { method: "POST", headers: proxied.headers, body: JSON.stringify({ model: "team/model-alias", messages: [] }) });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ choices: [] });
+        expect(requests).toEqual(["http://gateway.invalid/v1/chat/completions"]);
+      } finally { await proxied.session.close({ reason: "test" }); }
+      const bypassed = await headersAndUrl("bypassed", "gateway.invalid");
+      try {
+        const response = await fetch(bypassed.url, { method: "POST", headers: bypassed.headers, body: JSON.stringify({ model: "team/model-alias", messages: [] }) });
+        expect(response.status).toBe(502);
+        expect(requests).toHaveLength(1);
+      } finally { await bypassed.session.close({ reason: "test" }); }
+    } finally {
+      await new Promise<void>(resolve => { outgoingProxy.close(() => resolve()); outgoingProxy.closeAllConnections(); });
+    }
+  });
+
   it("starts an authenticated isolated server, creates a session, streams usage, aborts, and cleans up", async () => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));

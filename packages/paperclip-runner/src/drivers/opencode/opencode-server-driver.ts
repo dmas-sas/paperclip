@@ -5,13 +5,15 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:net";
-import { createServer as createHttpServer } from "node:http";
-import { Readable } from "node:stream";
+import { Agent as HttpAgent, createServer as createHttpServer, request as requestHttp, type IncomingMessage } from "node:http";
+import { Agent as HttpsAgent, request as requestHttps } from "node:https";
+import { getCACertificates } from "node:tls";
 import { pipeline } from "node:stream/promises";
 import { dirname, join, resolve } from "node:path";
 
@@ -1974,9 +1976,26 @@ class OpenCodeHarnessSession implements HarnessSession {
 }
 
 /** Retain the reusable gateway key in the runner; the harness gets a session-scoped capability. */
-async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: string) {
+async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: string, environment: NodeJS.ProcessEnv) {
   const upstreamUrl = new URL(`${baseUrl.replace(/\/+$/, "")}/chat/completions`);
   const token = randomBytes(32).toString("base64url");
+  // Agent-local settings keep one runtime's transport configuration out of other sessions.
+  const proxyEnv = {
+    HTTP_PROXY: environment.http_proxy ?? environment.HTTP_PROXY ?? environment.all_proxy ?? environment.ALL_PROXY,
+    HTTPS_PROXY: environment.https_proxy ?? environment.HTTPS_PROXY ?? environment.http_proxy ?? environment.HTTP_PROXY ?? environment.all_proxy ?? environment.ALL_PROXY,
+    NO_PROXY: environment.no_proxy ?? environment.NO_PROXY,
+  };
+  const ca = getCACertificates("default");
+  if (environment.SSL_CERT_FILE) ca.push(await readFile(environment.SSL_CERT_FILE, "utf8"));
+  if (environment.SSL_CERT_DIR) {
+    for (const entry of await readdir(environment.SSL_CERT_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        const certificate = await readFile(join(environment.SSL_CERT_DIR, entry.name), "utf8");
+        if (certificate.includes("-----BEGIN CERTIFICATE-----")) ca.push(certificate);
+      }
+    }
+  }
+  const agent = upstreamUrl.protocol === "https:" ? new HttpsAgent({ proxyEnv, ca }) : new HttpAgent({ proxyEnv });
   const controllers = new Set<AbortController>();
   const server = createHttpServer((request, response) => {
     const controller = new AbortController();
@@ -2009,34 +2028,44 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
         response.writeHead(400).end();
         return;
       }
-      const upstream = await globalThis.fetch(upstreamUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
-        body,
-        redirect: "error",
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
+      const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
+        const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
+          method: "POST",
+          agent,
+          headers: { "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
+        }, resolve);
+        outgoing.once("error", reject);
+        outgoing.end(body);
       });
-      // Do not expose upstream credentials via redirects or arbitrary response headers.
-      const headers: Record<string, string> = {};
-      for (const name of ["content-type", "cache-control", "retry-after"]) {
-        const value = upstream.headers.get(name);
-        if (value) headers[name] = value;
+      // Never forward authentication to a redirect destination.
+      const status = upstream.statusCode ?? 502;
+      if (status >= 300 && status < 400) {
+        upstream.destroy();
+        throw new Error("Provider redirects are not supported");
       }
-      response.writeHead(upstream.status, headers);
-      if (upstream.body) await pipeline(Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]), response);
-      else response.end();
+      const headers: Record<string, string> = {};
+      for (const name of ["content-type", "content-encoding", "cache-control", "retry-after"]) {
+        const value = upstream.headers[name];
+        if (typeof value === "string") headers[name] = value;
+      }
+      response.writeHead(status, headers);
+      await pipeline(upstream, response);
     })().catch(() => {
       if (!response.headersSent) response.writeHead(502).end("Provider request failed");
       else response.destroy();
     }).finally(() => controllers.delete(controller));
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+    });
+  } catch (error) { agent.destroy(); throw error; }
   const address = server.address();
   if (!address || typeof address === "string") {
     server.close();
+    agent.destroy();
     throw new Error("Could not bind OpenCode provider proxy");
   }
   return {
@@ -2044,6 +2073,7 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
     token,
     close: async () => {
       for (const controller of controllers) controller.abort();
+      agent.destroy();
       await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
     },
   };
@@ -2123,7 +2153,7 @@ async function startRuntime(input: {
   const [modelProvider, ...modelIdParts] = input.options.model.split("/");
   const providerModelId = modelIdParts.join("/");
   const providerProxy = modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
-    ? await startOpenCodeProviderProxy(input.options.environment.PAPERCLIP_AI_PROVIDER_URL, input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "", providerModelId).catch(async error => {
+    ? await startOpenCodeProviderProxy(input.options.environment.PAPERCLIP_AI_PROVIDER_URL, input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "", providerModelId, input.options.environment).catch(async error => {
         await bridge.close().catch(() => {});
         await rm(isolatedHome, { recursive: true, force: true }).catch(() => {});
         throw error;
@@ -2210,6 +2240,7 @@ async function startRuntime(input: {
         OPENCODE_DISABLE_PROJECT_CONFIG: "true",
         OPENCODE_SERVER_USERNAME: username,
         OPENCODE_SERVER_PASSWORD: password,
+        ...(providerProxy ? { NO_PROXY: [input.options.environment?.no_proxy ?? input.options.environment?.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") } : {}),
       },
     );
     const isolateProcessGroup = input.options.isolateProcessGroup ?? true;

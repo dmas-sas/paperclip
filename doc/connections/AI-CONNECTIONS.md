@@ -558,7 +558,10 @@ Native OpenCode custom gateways keep the reusable key in the runner process.
 The harness configuration contains a session-scoped loopback capability, limited
 to the configured model's Chat Completions endpoint. Streaming and provider error
 status are preserved; redirects are rejected. Closing or failing the harness
-revokes the capability and aborts outstanding requests. This bounds key exposure
+revokes the capability and aborts outstanding requests. Upstream requests use
+session-local Node HTTP/HTTPS agents with the runtime's HTTP_PROXY, HTTPS_PROXY,
+ALL_PROXY fallback, NO_PROXY bypasses, and SSL_CERT_FILE/SSL_CERT_DIR trust. The
+harness bypasses outgoing proxies for loopback broker/MCP calls. This bounds key exposure
 from shell tools reading the configuration; it is not an OS isolation boundary
 against a process debugger running as the runner user.
 
