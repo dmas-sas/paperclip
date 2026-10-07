@@ -1960,6 +1960,14 @@ describe("sandbox managed runtime", () => {
     ).resolves.toBe("keep\n");
     await expect(readFile(path.join(remoteWorkspaceDir, "tracked.txt"), "utf8")).resolves.toBe("tracked\n");
     expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
+
+    // `.paperclip-runtime` holds the agent's managed HOME and adapter config. Git inside the sandbox must
+    // not offer it for commit, or an agent's `git add -A` would put runtime credentials into history.
+    const untracked = await git(remoteWorkspaceDir, ["status", "--porcelain", "--untracked-files=all"]);
+    expect(untracked).not.toContain(".paperclip-runtime");
+    await expect(readFile(path.join(remoteWorkspaceDir, ".git", "info", "exclude"), "utf8")).resolves.toContain(
+      "/.paperclip-runtime/",
+    );
   });
 
   it("the workspace wipe command preserves in-flight sync scratch tarballs (.paperclip-upload-*)", async () => {

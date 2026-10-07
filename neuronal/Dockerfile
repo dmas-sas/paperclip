@@ -4,5 +4,5 @@
 ARG PAPERCLIP_VERSION
 FROM ghcr.io/paperclipai/paperclip:${PAPERCLIP_VERSION}
 
-# fix(adapter-utils): extraer el workspace del sandbox con --no-same-owner (git "dubious ownership" en sandboxes root)
+# fix(adapter-utils): workspace del sandbox con --no-same-owner (git "dubious ownership") y .paperclip-runtime excluido de git
 COPY --chown=node:node packages/adapter-utils/src/sandbox-managed-runtime.ts /app/packages/adapter-utils/src/sandbox-managed-runtime.ts
