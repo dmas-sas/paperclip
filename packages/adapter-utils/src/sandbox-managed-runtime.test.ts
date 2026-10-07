@@ -1944,7 +1944,15 @@ describe("sandbox managed runtime", () => {
     // `.paperclip-runtime` while replacing the rest of the tree (wipe-except-preserved).
     const gitCommand = op.postUploadCommands![0].command;
     expect(gitCommand).toContain(".paperclip-runtime");
-    expect(gitCommand).toContain("tar -xf");
+    expect(gitCommand).toContain("tar --no-same-owner -xf");
+    // Sandboxes often execute as root. A root `tar -x` restores the host uid on every entry, and git then
+    // rejects the workspace ("detected dubious ownership"); the GitHub launcher blanks system/global git
+    // config, so `safe.directory` cannot fix it. Extracted files must belong to the sandbox user instead.
+    const extractCommands = op.postUploadCommands!.filter((entry) => /\btar\b[^&]*-xf/.test(entry.command));
+    expect(extractCommands.length).toBeGreaterThanOrEqual(2);
+    for (const { command } of extractCommands) {
+      expect(command).toContain("--no-same-owner");
+    }
 
     // The pre-seeded runtime dir survived the git+workspace staging.
     await expect(

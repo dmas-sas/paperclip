@@ -643,9 +643,12 @@ function buildWorkspaceTarExtractCommand(input: {
     ? ` && find ${shellQuote(input.workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ` +
       `${preserveFindArgs([...input.wipeExceptNames, ".paperclip-upload-*"])} -exec rm -rf -- {} +`
     : "";
+  // `--no-same-owner`: sandboxes often execute as root, and a root extract would restore the host uid on
+  // every entry. Git then rejects the workspace ("detected dubious ownership"), and the GitHub launcher
+  // blanks system/global git config, so `safe.directory` cannot help. Files belong to the sandbox user.
   return (
     `mkdir -p ${shellQuote(input.workspaceRemoteDir)}${wipe} && ` +
-    `tar -xf ${shellQuote(input.remoteTar)} -C ${shellQuote(input.workspaceRemoteDir)} && ` +
+    `tar --no-same-owner -xf ${shellQuote(input.remoteTar)} -C ${shellQuote(input.workspaceRemoteDir)} && ` +
     `rm -f ${shellQuote(input.remoteTar)}`
   );
 }
