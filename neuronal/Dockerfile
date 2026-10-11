@@ -9,3 +9,5 @@ COPY --chown=node:node packages/adapter-utils/src/sandbox-managed-runtime.ts /ap
 
 # fix(adapter-utils): en sandbox, el broker de GitHub va por el puente (localhost:3100 no existe dentro de Modal)
 COPY --chown=node:node packages/adapter-utils/src/execution-target.ts /app/packages/adapter-utils/src/execution-target.ts
+# fix(adapter-utils): el lanzador de git espera 60 s al broker (el puente de archivos del sandbox tarda 20-50 s por llamada)
+COPY --chown=node:node packages/adapter-utils/src/github-launcher.ts /app/packages/adapter-utils/src/github-launcher.ts

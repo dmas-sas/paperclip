@@ -153,4 +153,10 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect(env.GH_TOKEN).toBe("");
     expect(env.GIT_AUTHOR_NAME).toBe("");
   });
+
+  // Neuronal: the sandbox file bridge relays each call through the provider and
+  // routinely takes 20-50 s, so a 10 s budget left git without credentials.
+  it("waits long enough for the broker behind a slow sandbox bridge", () => {
+    expect(githubLauncherSource()).toContain("AbortSignal.timeout(60000)");
+  });
 });
