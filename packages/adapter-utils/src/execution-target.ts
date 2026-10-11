@@ -4159,7 +4159,22 @@ async function closeDuplexChannelWithinBudget(
   }
 }
 
-export async function startAdapterExecutionTargetPaperclipBridge(input: {
+// Neuronal: the GitHub launcher reads PAPERCLIP_GITHUB_BROKER_URL first, and the
+// heartbeat sets it to the host API URL, which a sandbox cannot reach. Point it
+// at the bridge origin (the bridge already allows /runtime-tools/github/credentials),
+// as the native runner path does in heartbeat.ts.
+export async function startAdapterExecutionTargetPaperclipBridge(
+  input: Parameters<typeof startPaperclipBridgeTransport>[0],
+): Promise<AdapterExecutionTargetPaperclipBridgeHandle | null> {
+  const handle = await startPaperclipBridgeTransport(input);
+  if (!handle?.env.PAPERCLIP_API_URL) return handle;
+  return {
+    ...handle,
+    env: { ...handle.env, PAPERCLIP_GITHUB_BROKER_URL: handle.env.PAPERCLIP_API_URL },
+  };
+}
+
+async function startPaperclipBridgeTransport(input: {
   runId: string;
   target: AdapterExecutionTarget | null | undefined;
   runtimeRootDir: string | null | undefined;

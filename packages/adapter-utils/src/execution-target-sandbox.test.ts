@@ -2135,6 +2135,9 @@ describe("sandbox adapter execution targets", () => {
       expect(bridge?.env.PAPERCLIP_API_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
       expect(bridge?.env.PAPERCLIP_API_KEY).not.toBe("real-run-jwt");
       expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
+      // The GitHub launcher inside the sandbox must reach the broker through the
+      // bridge too; the host-side broker URL (localhost:3100) is unreachable there.
+      expect(bridge?.env.PAPERCLIP_GITHUB_BROKER_URL).toBe(bridge?.env.PAPERCLIP_API_URL);
 
       const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/agents/me`, {
         headers: {

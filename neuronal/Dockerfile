@@ -6,3 +6,6 @@ FROM ghcr.io/paperclipai/paperclip:${PAPERCLIP_VERSION}
 
 # fix(adapter-utils): workspace del sandbox con --no-same-owner (git "dubious ownership") y .paperclip-runtime excluido de git
 COPY --chown=node:node packages/adapter-utils/src/sandbox-managed-runtime.ts /app/packages/adapter-utils/src/sandbox-managed-runtime.ts
+
+# fix(adapter-utils): en sandbox, el broker de GitHub va por el puente (localhost:3100 no existe dentro de Modal)
+COPY --chown=node:node packages/adapter-utils/src/execution-target.ts /app/packages/adapter-utils/src/execution-target.ts
