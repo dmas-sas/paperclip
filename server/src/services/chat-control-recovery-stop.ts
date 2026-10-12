@@ -636,5 +636,18 @@ export async function readChatControlRecoveryStop(
     }
     return { kind: publications.length > 50 ? "unresolved" : "clear" };
   }
-  return { kind: "unresolved" };
+  // Neuronal: a chat close can only stop a task that has a chat conversation.
+  // Without one, an exhausted walk (long "workspace busy" retry chains) proves
+  // nothing to honor, and holding the run left it queued forever.
+  const [conversation] = await db
+    .select({ id: chatConversations.id })
+    .from(chatConversations)
+    .where(
+      and(
+        eq(chatConversations.companyId, scope.companyId),
+        eq(chatConversations.issueId, scope.issueId),
+      ),
+    )
+    .limit(1);
+  return { kind: conversation ? "unresolved" : "clear" };
 }

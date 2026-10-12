@@ -11395,6 +11395,31 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
+  // Neuronal: each "workspace busy" retry is a new automatic run chained to the
+  // last. Past 64 links the walk ran out and the run sat queued forever, even for
+  // tasks that never had a chat conversation to close.
+  it.each([
+    ["never had a chat conversation", false, "clear"],
+    ["has a chat conversation", true, "unresolved"],
+  ] as const)(
+    "after a long automatic retry chain, a task that %s (conversation: %s) reads as %s",
+    async (_label, withConversation, expected) => {
+      const source = withConversation
+        ? await seedCommittedChatControlStop()
+        : ((await seedStrandedIssueFixture({
+            status: "in_progress",
+            runStatus: "succeeded",
+            livenessState: "advanced",
+          })) as unknown as Awaited<ReturnType<typeof seedCommittedChatControlStop>>);
+      let parentId = source.runId;
+      for (let i = 0; i < 70; i++)
+        parentId = (await seedChatAutomaticChild(source, { parentId })).runId;
+      expect(
+        (await readChatControlRecoveryStop(db, chatStopScope(source, parentId))).kind,
+      ).toBe(expected);
+    },
+  );
+
   it("orders chat close against original admitted sources, not a later failed retry action", async () => {
     const source = await seedCommittedChatControlStop();
     const retry = await seedChatAutomaticChild(source);

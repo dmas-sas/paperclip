@@ -11,3 +11,5 @@ COPY --chown=node:node packages/adapter-utils/src/sandbox-managed-runtime.ts /ap
 COPY --chown=node:node packages/adapter-utils/src/execution-target.ts /app/packages/adapter-utils/src/execution-target.ts
 # fix(adapter-utils): el lanzador de git espera 60 s al broker (el puente de archivos del sandbox tarda 20-50 s por llamada)
 COPY --chown=node:node packages/adapter-utils/src/github-launcher.ts /app/packages/adapter-utils/src/github-launcher.ts
+# The server runs compiled code: ship the patched dist file next to its source change.
+COPY --chown=node:node neuronal/dist/server/services/chat-control-recovery-stop.js /app/server/dist/services/chat-control-recovery-stop.js
