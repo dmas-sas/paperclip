@@ -17,6 +17,20 @@ if (!['git', 'gh'].includes(program) || !executable) {
   process.stderr.write('Paperclip: requested GitHub command is not installed.\n');
   process.exit(127);
 }
+// Neuronal: read-only local Git needs neither a token nor an identity, and in a
+// sandbox each broker call crosses the bridge (20-50 s). Anything not listed here,
+// including aliases and commands that write commits or reflogs, still asks.
+const READ_ONLY_GIT = new Set(['status', 'log', 'diff', 'show', 'rev-parse', 'rev-list', 'reflog', 'ls-files',
+  'ls-tree', 'grep', 'blame', 'describe', 'show-ref', 'cat-file', 'for-each-ref', 'merge-base', 'shortlog',
+  'diff-tree', 'diff-index', 'diff-files', 'name-rev', 'check-ignore', 'count-objects', 'fsck', 'version', 'help']);
+function gitSubcommand(args) {
+  for (let i = 0; i < args.length; i++) {
+    if (['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env'].includes(args[i])) i++;
+    else if (!args[i].startsWith('-')) return args[i];
+  }
+  return null;
+}
+const readOnlyGit = program === 'git' && READ_ONLY_GIT.has(gitSubcommand(process.argv.slice(2)));
 async function main() {
   let env = { ...process.env };
   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
@@ -52,7 +66,9 @@ async function main() {
     const base = env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL;
     try {
     let response;
-    if (base && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
+    if (readOnlyGit) {
+      // Local inspection only: keep the sanitized environment, skip the capture.
+    } else if (base && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
       const url = base.replace(/\/+$/, '').replace(/\/api$/, '') + '/runtime-tools/github/credentials';
       for (let attempt = 0; attempt < 30; attempt++) {
         response = await fetch(url, {

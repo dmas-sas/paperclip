@@ -51,7 +51,7 @@ describe("managed GitHub launchers", () => {
     else cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
     const configRoot = path.join(root, "config");
     if (failure === "config-unwritable") await writeFile(configRoot, "not a directory");
-    const result = await exec(path.join(bin, "git"), ["status", "--porcelain"], { cwd: root, env: {
+    const result = await exec(path.join(bin, "git"), ["var", "GIT_AUTHOR_IDENT"], { cwd: root, env: {
       ...process.env, ...githubBrokerEnvironment({ GH_TOKEN: "host-must-not-leak" }, { url: `http://127.0.0.1:${port}`, token: "private-capability" }),
       GH_CONFIG_DIR: configRoot, PATH: `${bin}:${process.env.PATH}`,
     } });
@@ -152,6 +152,43 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect(await git("status", "--porcelain")).toBe(""); // unrelated public/local Git still works
     expect(env.GH_TOKEN).toBe("");
     expect(env.GIT_AUTHOR_NAME).toBe("");
+  });
+
+  // Neuronal: each broker call crosses the sandbox bridge (20-50 s), and agents run
+  // many local read-only Git commands. Those need neither a token nor an identity.
+  it("skips the broker for read-only local Git and keeps it for everything else", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-read-only-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), repo = path.join(root, "repo");
+    for (const dir of [bin, repo]) await mkdir(dir, { recursive: true });
+    await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
+    await exec("git", ["init", repo]);
+    let captures = 0;
+    const server = createServer((_req, res) => {
+      captures++;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "available", env: {
+        GIT_AUTHOR_NAME: "Broker", GIT_AUTHOR_EMAIL: "broker@example.test",
+        GIT_COMMITTER_NAME: "Broker", GIT_COMMITTER_EMAIL: "broker@example.test",
+      } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    const env = { ...process.env, ...githubBrokerEnvironment({ GH_TOKEN: "host-must-not-leak" },
+      { url: `http://127.0.0.1:${port}`, token: "run-capability" }), PATH: `${bin}:${process.env.PATH}` };
+    const git = async (...args: string[]) => (await exec(path.join(bin, "git"), args, { cwd: repo, env }));
+    await git("commit", "--allow-empty", "-m", "Needs the broker identity");
+    expect(captures).toBe(1);
+    for (const args of [["status", "--porcelain"], ["log", "-1", "--format=%an"], ["-C", repo, "diff", "--stat"],
+      ["--no-pager", "-c", "core.quotePath=false", "show", "--stat"], ["rev-parse", "HEAD"], ["reflog", "-1"]]) {
+      const result = await git(...args);
+      expect(result.stderr).not.toContain("Paperclip: GitHub");
+    }
+    expect(captures).toBe(1);
+    expect((await git("log", "-1", "--format=%an")).stdout.trim()).toBe("Broker");
+    await expect(git("var", "GIT_AUTHOR_IDENT")).resolves.toBeDefined();
+    expect(captures).toBe(2); // anything not known to be read-only still asks
   });
 
   // Neuronal: the sandbox file bridge relays each call through the provider and
